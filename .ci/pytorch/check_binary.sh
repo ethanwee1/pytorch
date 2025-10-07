@@ -106,7 +106,9 @@ if [[ "$(uname)" == 'Darwin' ]]; then
 else
   all_libs=($(find "$install_root" -name '*.so'))
   for lib in "${all_libs[@]}"; do
-    echo "All dependencies of $lib are $(ldd $lib) with runpath $(objdump -p $lib | grep RUNPATH)"
+    ldd_out="$(ldd "$lib")"
+    echo "All dependencies of $lib are ${ldd_out} with runpath $(objdump -p "$lib" | grep RUNPATH)"
+    
 
     # Check for protobuf symbols
     #proto_symbols=$(nm $lib | grep protobuf) || true
@@ -115,6 +117,12 @@ else
     #  echo "Symbols are $proto_symbols"
     #  exit 1
     #fi
+    unbundled_libs="$(echo "$ldd_out" | grep '/opt/rocm/')"
+    if [[ -n "$offenders" ]]; then
+      echo "ERROR: $lib links against /opt/rocm/:"
+      echo "$unbundled_libs"
+      exit 1
+    fi
   done
 fi
 
