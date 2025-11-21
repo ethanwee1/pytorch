@@ -19,15 +19,18 @@ env:
   PYTHON_VERSION: "3.12"
 
 jobs:
-  # Job 1: Modify existing CI image to use TheRock nightly
+  # Job 1: Build TheRock-based Docker image from Dockerfile
   create-therock-image:
     runs-on: ubuntu-latest
     outputs:
-      image-tag: ${{ steps.create-image.outputs.image-tag }}
+      image-tag: ${{ steps.build-image.outputs.image-tag }}
 
     steps:
       - name: Checkout pytorch
         uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Show runner info
         run: |
@@ -35,17 +38,10 @@ jobs:
           docker version
           df -h
 
-      - name: Pull base CI image
-        run: |
-          echo "Pulling base CI image: ${{ env.BASE_CI_IMAGE }}"
-          docker pull ${{ env.BASE_CI_IMAGE }} || echo "Warning: Could not pull image, may need authentication"
-
-      - name: Create TheRock-based image
-        id: create-image
+      - name: Build TheRock-based ROCm CI image
+        id: build-image
         env:
           THEROCK_NIGHTLY_INDEX_URL: ${{ env.THEROCK_NIGHTLY_INDEX_URL }}
-          BASE_CI_IMAGE: ${{ env.BASE_CI_IMAGE }}
-          THEROCK_IMAGE: ${{ env.THEROCK_IMAGE }}
         run: |
           set -euxo pipefail
           
@@ -53,87 +49,27 @@ jobs:
           DATE_TAG=$(date +%Y%m%d)
           IMAGE_TAG="${THEROCK_IMAGE}:nightly-${DATE_TAG}"
 
-          echo "Creating TheRock nightly image from base CI image"
-          echo "Base: ${BASE_CI_IMAGE}"
-          echo "Target: ${IMAGE_TAG}"
+          echo "Building TheRock nightly CI image: ${IMAGE_TAG}"
 
-          # Run the base image and modify it
-          docker run --name therock-setup "${BASE_CI_IMAGE}" bash -c '
-            set -euxo pipefail
-            
-            echo "=== Removing existing /opt/rocm ==="
-            if [ -d /opt/rocm ]; then
-              rm -rf /opt/rocm
-              echo "/opt/rocm removed successfully"
-            else
-              echo "/opt/rocm does not exist"
-            fi
-            
-            echo "=== Installing TheRock nightly wheels ==="
-            python3 -m pip install --upgrade pip
-            python3 -m pip install \
-              --index-url "'"${THEROCK_NIGHTLY_INDEX_URL}"'" \
-              "rocm-sdk[libraries,devel]"
-            
-            echo "=== Setting up ROCm environment ==="
-            ROCM_HOME="$(rocm-sdk path --root)"
-            ROCM_BIN="$(rocm-sdk path --bin)"
-            ROCM_CMAKE_PREFIX="$(rocm-sdk path --cmake)"
-            
-            echo "ROCM_HOME=${ROCM_HOME}"
-            echo "ROCM_BIN=${ROCM_BIN}"
-            echo "ROCM_CMAKE_PREFIX=${ROCM_CMAKE_PREFIX}"
-            
-            # Save paths for docker commit
-            echo "${ROCM_HOME}" > /tmp/rocm_home.txt
-            echo "${ROCM_BIN}" > /tmp/rocm_bin.txt
-            
-            # Create environment setup script
-            cat > /etc/profile.d/rocm-sdk.sh <<EOF
-export ROCM_HOME="${ROCM_HOME}"
-export ROCM_PATH="${ROCM_HOME}"
-export PATH="${ROCM_BIN}:\$PATH"
-export CMAKE_PREFIX_PATH="${ROCM_CMAKE_PREFIX}:\${CMAKE_PREFIX_PATH:-}"
-export ROCM_VERSION=nightly
-EOF
-            
-            echo "=== Verifying TheRock installation ==="
-            rocm-sdk --version || true
-            rocm-sdk path --root
-            ls -la "${ROCM_HOME}" || true
-            
-            echo "=== TheRock setup complete ==="
-          '
-          
-          # Get the ROCM paths from the container
-          ROCM_HOME=$(docker exec therock-setup cat /tmp/rocm_home.txt)
-          ROCM_BIN=$(docker exec therock-setup cat /tmp/rocm_bin.txt)
-          
-          echo "ROCM_HOME=${ROCM_HOME}"
-          echo "ROCM_BIN=${ROCM_BIN}"
-          
-          # Commit the container to a new image with ENV variables
-          echo "Committing container to new image with environment variables..."
-          docker commit \
-            --change "ENV ROCM_PATH=${ROCM_HOME}" \
-            --change "ENV ROCM_HOME=${ROCM_HOME}" \
-            --change "ENV PATH=${ROCM_BIN}:/opt/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-            --change "ENV ROCM_VERSION=nightly" \
-            therock-setup "${IMAGE_TAG}"
-          
-          # Clean up container
-          docker rm therock-setup
-          
+          # Build from Dockerfile with TheRock nightly mode
+          docker build \
+            -f .ci/docker/ubuntu-rocm/Dockerfile \
+            --build-arg UBUNTU_VERSION=24.04 \
+            --build-arg ROCM_VERSION=nightly \
+            --build-arg ANACONDA_PYTHON_VERSION=3.12 \
+            --build-arg PYTORCH_ROCM_ARCH=gfx942 \
+            --build-arg USE_THEROCK_NIGHTLY=1 \
+            --build-arg THEROCK_NIGHTLY_INDEX_URL="${THEROCK_NIGHTLY_INDEX_URL}" \
+            --build-arg BUILD_ENVIRONMENT="therock-nightly-rocm" \
+            -t "${IMAGE_TAG}" \
+            .
+
           # Also tag as latest
           docker tag "${IMAGE_TAG}" "${THEROCK_IMAGE}:latest"
-          
+
           echo "image-tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
           
-          # Show image info
-          docker images | grep "${THEROCK_IMAGE}" || true
-          
           # Save docker image as artifact for next job
-          echo "Saving image as artifact..."
           docker save "${IMAGE_TAG}" | gzip > therock-docker-image.tar.gz
 
       - name: Upload Docker image as artifact
