@@ -155,19 +155,5 @@ ENV BUILD_ENVIRONMENT ${BUILD_ENVIRONMENT}
 # Install LLVM dev version (Defined in the pytorch/builder github repository)
 COPY --from=pytorch/llvm:9.0.1 /opt/llvm /opt/llvm
 
-# Create entrypoint that sources /etc/environment for dynamic ROCm paths
-RUN echo '#!/bin/bash' > /docker-entrypoint.sh && \
-    echo 'set -e' >> /docker-entrypoint.sh && \
-    echo '# Source environment to get dynamic ROCM_PATH' >> /docker-entrypoint.sh && \
-    echo 'if [ -f /etc/environment ]; then' >> /docker-entrypoint.sh && \
-    echo '  set -a' >> /docker-entrypoint.sh && \
-    echo '  source /etc/environment' >> /docker-entrypoint.sh && \
-    echo '  set +a' >> /docker-entrypoint.sh && \
-    echo 'fi' >> /docker-entrypoint.sh && \
-    echo 'exec "$@"' >> /docker-entrypoint.sh && \
-    chmod +x /docker-entrypoint.sh
-
-ENTRYPOINT ["/docker-entrypoint.sh"]
-
 USER jenkins
 CMD ["bash"]
