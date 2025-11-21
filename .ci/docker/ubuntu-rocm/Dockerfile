@@ -68,6 +68,18 @@ RUN bash ./install_rocm_magma.sh ${ROCM_VERSION}
 RUN rm install_rocm_magma.sh
 ADD ./common/install_miopen.sh install_miopen.sh
 RUN bash ./install_miopen.sh ${ROCM_VERSION} && rm install_miopen.sh
+
+# Detect actual ROCM_PATH and set in /etc/environment for all processes
+RUN if [ "${USE_THEROCK_NIGHTLY}" = "1" ]; then \
+      ROCM_PATH_DETECTED=$(python3 -c "from pathlib import Path; import subprocess; print(subprocess.check_output(['python3', '-m', 'rocm_sdk', 'path', '--root']).decode().strip())"); \
+    else \
+      ROCM_PATH_DETECTED=/opt/rocm; \
+    fi && \
+    echo "ROCM_PATH=${ROCM_PATH_DETECTED}" >> /etc/environment && \
+    echo "PATH=${ROCM_PATH_DETECTED}/bin:${ROCM_PATH_DETECTED}/hcc/bin:${ROCM_PATH_DETECTED}/hip/bin:${ROCM_PATH_DETECTED}/opencl/bin:${ROCM_PATH_DETECTED}/llvm/bin:\${PATH}" >> /etc/environment && \
+    echo "MAGMA_HOME=${ROCM_PATH_DETECTED}/magma" >> /etc/environment
+
+# Set default ENV for traditional builds - will be overridden by /etc/environment for TheRock
 ENV ROCM_PATH /opt/rocm
 ENV PATH /opt/rocm/bin:$PATH
 ENV PATH /opt/rocm/hcc/bin:$PATH
@@ -144,6 +156,20 @@ ENV BUILD_ENVIRONMENT ${BUILD_ENVIRONMENT}
 
 # Install LLVM dev version (Defined in the pytorch/builder github repository)
 COPY --from=pytorch/llvm:9.0.1 /opt/llvm /opt/llvm
+
+# Create entrypoint that sources /etc/environment for dynamic ROCm paths
+RUN echo '#!/bin/bash' > /docker-entrypoint.sh && \
+    echo 'set -e' >> /docker-entrypoint.sh && \
+    echo '# Source environment to get dynamic ROCM_PATH' >> /docker-entrypoint.sh && \
+    echo 'if [ -f /etc/environment ]; then' >> /docker-entrypoint.sh && \
+    echo '  set -a' >> /docker-entrypoint.sh && \
+    echo '  source /etc/environment' >> /docker-entrypoint.sh && \
+    echo '  set +a' >> /docker-entrypoint.sh && \
+    echo 'fi' >> /docker-entrypoint.sh && \
+    echo 'exec "$@"' >> /docker-entrypoint.sh && \
+    chmod +x /docker-entrypoint.sh
+
+ENTRYPOINT ["/docker-entrypoint.sh"]
 
 USER jenkins
 CMD ["bash"]
