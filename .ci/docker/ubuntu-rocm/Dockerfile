@@ -69,10 +69,11 @@ RUN rm install_rocm_magma.sh
 ADD ./common/install_miopen.sh install_miopen.sh
 RUN bash ./install_miopen.sh ${ROCM_VERSION} && rm install_miopen.sh
 
-# Detect actual ROCM_PATH and set in /etc/environment for all processes
 RUN if [ "${USE_THEROCK_NIGHTLY}" = "1" ]; then \
-      ROCM_PATH_DETECTED=$(python3 -c "from pathlib import Path; import subprocess; print(subprocess.check_output(['python3', '-m', 'rocm_sdk', 'path', '--root']).decode().strip())"); 
-    fi
+        ROCM_PATH_DETECTED="$(python3 -m rocm_sdk path --root)"; \
+    else \
+        ROCM_PATH_DETECTED="/opt/rocm"; \
+    fi; \
     echo "ROCM_PATH=${ROCM_PATH_DETECTED}" >> /etc/environment && \
     echo "PATH=${ROCM_PATH_DETECTED}/bin:${ROCM_PATH_DETECTED}/hcc/bin:${ROCM_PATH_DETECTED}/hip/bin:${ROCM_PATH_DETECTED}/opencl/bin:${ROCM_PATH_DETECTED}/llvm/bin:\${PATH}" >> /etc/environment && \
     echo "MAGMA_HOME=${ROCM_PATH_DETECTED}/magma" >> /etc/environment
