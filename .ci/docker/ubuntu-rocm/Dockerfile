@@ -71,10 +71,8 @@ RUN bash ./install_miopen.sh ${ROCM_VERSION} && rm install_miopen.sh
 
 # Detect actual ROCM_PATH and set in /etc/environment for all processes
 RUN if [ "${USE_THEROCK_NIGHTLY}" = "1" ]; then \
-      ROCM_PATH_DETECTED=$(python3 -c "from pathlib import Path; import subprocess; print(subprocess.check_output(['python3', '-m', 'rocm_sdk', 'path', '--root']).decode().strip())"); \
-    else \
-      ROCM_PATH_DETECTED=/opt/rocm; \
-    fi && \
+      ROCM_PATH_DETECTED=$(python3 -c "from pathlib import Path; import subprocess; print(subprocess.check_output(['python3', '-m', 'rocm_sdk', 'path', '--root']).decode().strip())"); 
+    fi
     echo "ROCM_PATH=${ROCM_PATH_DETECTED}" >> /etc/environment && \
     echo "PATH=${ROCM_PATH_DETECTED}/bin:${ROCM_PATH_DETECTED}/hcc/bin:${ROCM_PATH_DETECTED}/hip/bin:${ROCM_PATH_DETECTED}/opencl/bin:${ROCM_PATH_DETECTED}/llvm/bin:\${PATH}" >> /etc/environment && \
     echo "MAGMA_HOME=${ROCM_PATH_DETECTED}/magma" >> /etc/environment
@@ -86,7 +84,6 @@ ENV PATH /opt/rocm/hcc/bin:$PATH
 ENV PATH /opt/rocm/hip/bin:$PATH
 ENV PATH /opt/rocm/opencl/bin:$PATH
 ENV PATH /opt/rocm/llvm/bin:$PATH
-ENV MAGMA_HOME /opt/rocm/magma
 ENV MAGMA_HOME /opt/rocm/magma
 ENV LANG C.UTF-8
 ENV LC_ALL C.UTF-8
