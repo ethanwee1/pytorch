@@ -39,7 +39,7 @@ install_ubuntu() {
       : "${THEROCK_NIGHTLY_INDEX_URL:=https://rocm.nightlies.amd.com/v2/gfx94X-dcgpu/}"
       python3 -m pip install \
         --index-url "${THEROCK_NIGHTLY_INDEX_URL}" \
-        "rocm-sdk[libraries,devel]"
+        "rocm[libraries,devel]"
 
       # Use the rocm-sdk CLI helper to populate environment defaults
       ROCM_HOME="$(rocm-sdk path --root)"
