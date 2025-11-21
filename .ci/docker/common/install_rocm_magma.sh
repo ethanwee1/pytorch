@@ -5,6 +5,13 @@ set -eou pipefail
 
 function do_install() {
     rocm_version=$1
+    
+    # Skip magma install for TheRock nightly builds
+    if [[ "${USE_THEROCK_NIGHTLY:-0}" == "1" ]]; then
+        echo "Skipping MAGMA install for TheRock nightly build"
+        return 0
+    fi
+    
     if [[ ${rocm_version} =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         # chop off any patch version
         rocm_version="${rocm_version%.*}"

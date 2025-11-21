@@ -399,6 +399,8 @@ docker build \
        --build-arg "SKIP_SCCACHE_INSTALL=${SKIP_SCCACHE_INSTALL:-}" \
        --build-arg "SKIP_LLVM_SRC_BUILD_INSTALL=${SKIP_LLVM_SRC_BUILD_INSTALL:-}" \
        --build-arg "INSTALL_MINGW=${INSTALL_MINGW:-}" \
+       --build-arg "USE_THEROCK_NIGHTLY=${USE_THEROCK_NIGHTLY:-}" \
+       --build-arg "THEROCK_NIGHTLY_INDEX_URL=${THEROCK_NIGHTLY_INDEX_URL:-}" \
        -f $(dirname ${DOCKERFILE})/Dockerfile \
        -t "$tmp_tag" \
        "$@" \
