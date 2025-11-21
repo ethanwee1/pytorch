@@ -10,6 +10,12 @@ if [[ -z $ROCM_VERSION ]]; then
     exit 1;
 fi
 
+# Skip MIOpen build for TheRock nightly builds
+if [[ "${USE_THEROCK_NIGHTLY:-0}" == "1" ]]; then
+    echo "Skipping MIOpen custom build for TheRock nightly"
+    exit 0
+fi
+
 IS_UBUNTU=0
 ID=$(grep -oP '(?<=^ID=).+' /etc/os-release | tr -d '"')
 case "$ID" in

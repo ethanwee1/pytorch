@@ -1,0 +1,198 @@
+name: therock-nightly
+
+on:
+  # Run at midnight UTC every day
+  schedule:
+    - cron: "0 0 * * *"
+  # Also allow manual triggering
+  workflow_dispatch:
+
+env:
+  PYTORCH_NIGHTLY_REF: nightly
+  THEROCK_NIGHTLY_INDEX_URL: https://rocm.nightlies.amd.com/v2/gfx94X-dcgpu/
+  ROCM_VERSION: nightly
+  # Base CI image to modify (same as rocm-mi300.yml uses)
+  BASE_CI_IMAGE: pytorch/pytorch-linux-noble-rocm-n-py3:latest
+  # New image name after installing TheRock
+  THEROCK_IMAGE: pytorch-linux-noble-rocm-nightly-py3
+  PYTORCH_ROCM_ARCH: "gfx942"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  # Job 1: Build TheRock-based Docker image from Dockerfile
+  create-therock-image:
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.build-image.outputs.image-tag }}
+
+    steps:
+      - name: Checkout pytorch
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Show runner info
+        run: |
+          uname -a
+          docker version
+          df -h
+
+      - name: Build TheRock-based ROCm CI image
+        id: build-image
+        env:
+          THEROCK_NIGHTLY_INDEX_URL: ${{ env.THEROCK_NIGHTLY_INDEX_URL }}
+        run: |
+          set -euxo pipefail
+          
+          # Tag with date for tracking
+          DATE_TAG=$(date +%Y%m%d)
+          IMAGE_TAG="${THEROCK_IMAGE}:nightly-${DATE_TAG}"
+
+          echo "Building TheRock nightly CI image: ${IMAGE_TAG}"
+
+          # Build from Dockerfile with TheRock nightly mode
+          docker build \
+            -f .ci/docker/ubuntu-rocm/Dockerfile \
+            --build-arg UBUNTU_VERSION=24.04 \
+            --build-arg ROCM_VERSION=nightly \
+            --build-arg ANACONDA_PYTHON_VERSION=3.12 \
+            --build-arg PYTORCH_ROCM_ARCH=gfx942 \
+            --build-arg USE_THEROCK_NIGHTLY=1 \
+            --build-arg THEROCK_NIGHTLY_INDEX_URL="${THEROCK_NIGHTLY_INDEX_URL}" \
+            --build-arg BUILD_ENVIRONMENT="therock-nightly-rocm" \
+            -t "${IMAGE_TAG}" \
+            .
+
+          # Also tag as latest
+          docker tag "${IMAGE_TAG}" "${THEROCK_IMAGE}:latest"
+
+          echo "image-tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          
+          # Save docker image as artifact for next job
+          docker save "${IMAGE_TAG}" | gzip > therock-docker-image.tar.gz
+
+      - name: Upload Docker image as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: therock-docker-image
+          path: therock-docker-image.tar.gz
+          retention-days: 1
+
+  # Job 2: Build PyTorch nightly using the TheRock image
+  build-pytorch-nightly:
+    needs: create-therock-image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout pytorch nightly branch
+        uses: actions/checkout@v4
+        with:
+          repository: pytorch/pytorch
+          ref: ${{ env.PYTORCH_NIGHTLY_REF }}
+          submodules: recursive
+
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: therock-docker-image
+
+      - name: Load Docker image
+        run: |
+          echo "Loading TheRock Docker image..."
+          gunzip -c therock-docker-image.tar.gz | docker load
+          docker images
+
+      - name: Build PyTorch nightly using TheRock image
+        env:
+          IMAGE_TAG: ${{ needs.create-therock-image.outputs.image-tag }}
+          PYTORCH_ROCM_ARCH: ${{ env.PYTORCH_ROCM_ARCH }}
+          PYTHON_VERSION: ${{ env.PYTHON_VERSION }}
+        run: |
+          set -euxo pipefail
+
+          # Create output directory on host
+          mkdir -p ${{ github.workspace }}/artifacts
+
+          # Build PyTorch inside the container
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspace \
+            -v ${{ github.workspace }}/artifacts:/artifacts \
+            -w /workspace \
+            -e PYTORCH_ROCM_ARCH="${PYTORCH_ROCM_ARCH}" \
+            -e MAX_JOBS=8 \
+            "${IMAGE_TAG}" \
+            bash -c '
+              set -euxo pipefail
+
+              # Source the rocm-sdk environment
+              if [ -f /etc/profile.d/rocm-sdk.sh ]; then
+                source /etc/profile.d/rocm-sdk.sh
+                echo "Sourced /etc/profile.d/rocm-sdk.sh"
+              fi
+
+              # Verify ROCm is available
+              echo "=== ROCm Environment ==="
+              echo "ROCM_HOME=${ROCM_HOME}"
+              rocm-sdk path --root
+              rocm-sdk --version || true
+              which hipcc && hipcc --version || echo "hipcc not found"
+
+              # Activate conda environment for Python '"${PYTHON_VERSION}"'
+              source /opt/conda/etc/profile.d/conda.sh
+              conda activate py_'"${PYTHON_VERSION}"' || conda activate py_3.12
+
+              echo "=== Python Environment ==="
+              which python
+              python --version
+
+              # Install PyTorch dependencies
+              python -m pip install --upgrade pip
+              python -m pip install -r requirements.txt
+
+              # Initialize submodules if needed
+              git submodule sync
+              git submodule update --init --recursive
+
+              # Configure ROCm build flags
+              export USE_ROCM=1
+              export CMAKE_PREFIX_PATH="${ROCM_HOME}:${CMAKE_PREFIX_PATH:-}"
+              export PATH="${ROCM_HOME}/bin:${PATH}"
+              
+              echo "=== Build Configuration ==="
+              echo "USE_ROCM=${USE_ROCM}"
+              echo "PYTORCH_ROCM_ARCH=${PYTORCH_ROCM_ARCH}"
+              echo "MAX_JOBS=${MAX_JOBS}"
+              
+              # Build PyTorch wheel
+              echo "=== Starting PyTorch Build ==="
+              python setup.py bdist_wheel
+
+              # Copy artifacts to host-mounted directory
+              cp dist/*.whl /artifacts/
+              
+              echo "=== Build Complete ==="
+              ls -lh /artifacts/
+            '
+
+      - name: Upload PyTorch wheel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytorch-therock-nightly-wheels-py${{ env.PYTHON_VERSION }}
+          path: artifacts/*.whl
+          retention-days: 7
+
+      - name: Show build summary
+        run: |
+          echo "## PyTorch TheRock Nightly Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Built using TheRock nightly wheels from: ${{ env.THEROCK_NIGHTLY_INDEX_URL }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Build Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "- Base Image: ${{ env.BASE_CI_IMAGE }}" >> $GITHUB_STEP_SUMMARY
+          echo "- TheRock Image: ${{ env.THEROCK_IMAGE }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Python Version: ${{ env.PYTHON_VERSION }}" >> $GITHUB_STEP_SUMMARY
+          echo "- PyTorch ROCM Arch: ${{ env.PYTORCH_ROCM_ARCH }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Artifacts" >> $GITHUB_STEP_SUMMARY
+          ls -lh artifacts/*.whl >> $GITHUB_STEP_SUMMARY || echo "No wheels found"
