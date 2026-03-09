@@ -41,22 +41,25 @@ THRESHOLD = 60 * 10  # 10 minutes
 # torch.version.hip was not available to check if this was a ROCm self-hosted runner.
 # Must check for ROCm runner in another way. We look for /opt/rocm directory.
 if IS_ROCM and not IS_MEM_LEAK_CHECK:
-    try:
-        # This is the same logic used in GHA health check, see .github/templates/common.yml.j2
-        lines = (
-            subprocess.check_output(["rocminfo"], encoding="ascii").strip().split("\n")
-        )
-        count = 0
-        for line in lines:
-            if " gfx" in line:
-                count += 1
-        if count == 0:
-            raise AssertionError("There must be at least 1 GPU")
-        # Limiting to 8 GPUs(PROCS)
-        NUM_PROCS = min(count, 8)
-    except subprocess.CalledProcessError:
-        # The safe default for ROCm GHA runners is to run tests serially.
-        NUM_PROCS = 1
+    _hip_visible = os.environ.get("HIP_VISIBLE_DEVICES")
+    if _hip_visible is not None:
+        NUM_PROCS = min(len(_hip_visible.split(",")), 8)
+    else:
+        try:
+            lines = (
+                subprocess.check_output(["rocminfo"], encoding="ascii")
+                .strip()
+                .split("\n")
+            )
+            count = 0
+            for line in lines:
+                if " gfx" in line:
+                    count += 1
+            if count == 0:
+                raise AssertionError("There must be at least 1 GPU")
+            NUM_PROCS = min(count, 8)
+        except subprocess.CalledProcessError:
+            NUM_PROCS = 1
 
 
 class ShardJob:
