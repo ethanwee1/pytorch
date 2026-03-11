@@ -116,6 +116,9 @@ def get_jobs_with_sync_tag(
     # and ['with']['tests-to-include'], since dispatch filters differ
     if "tests-to-include" in job.get("with", {}):
         del job["with"]["tests-to-include"]
+    # and ['with']['build-environment'], since GPU-specific suffixes differ
+    if "build-environment" in job.get("with", {}):
+        del job["with"]["build-environment"]
 
     # normalize needs: remove helper job-filter so comparisons ignore it
     needs = job.get("needs")
