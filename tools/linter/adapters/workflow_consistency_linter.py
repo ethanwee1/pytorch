@@ -119,7 +119,7 @@ def get_jobs_with_sync_tag(
     # and ['with']['build-environment'], since GPU-specific suffixes differ for ROCm
     if (
         "build-environment" in job.get("with", {})
-        and "rocm" in job["with"]["bubuild-environment
+        and "rocm" in job["with"]["build-environment"]
     ):
         del job["with"]["build-environment"]
 
