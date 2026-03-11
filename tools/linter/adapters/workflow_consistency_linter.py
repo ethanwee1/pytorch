@@ -118,6 +118,10 @@ def get_jobs_with_sync_tag(
         del job["with"]["tests-to-include"]
     # and ['with']['build-environment'], since GPU-specific suffixes differ for ROCm
     if "build-environment" in job.get("with", {}) and "rocm" in job["with"]["build-environment"]:
+        if (
+            "build-environment" in job.get("with", {})
+            and "rocm" in job["with"]["build-environment"]
+        ):
         del job["with"]["build-environment"]
 
     # normalize needs: remove helper job-filter so comparisons ignore it
