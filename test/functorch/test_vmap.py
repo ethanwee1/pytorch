@@ -59,6 +59,7 @@ from torch.testing._internal.common_device_type import (
     onlyCUDA,
     OpDTypes,
     ops,
+    skipCUDAIfNoMagma,
     tol,
     toleranceOverride,
 )
