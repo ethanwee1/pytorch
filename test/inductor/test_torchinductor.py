@@ -82,7 +82,6 @@ from torch.testing._internal.common_cuda import (
 from torch.testing._internal.common_device_type import (
     expectedFailureXPU,
     largeTensorTest,
-    skipCUDAIfNoMagma,
 )
 from torch.testing._internal.common_dtype import all_types, get_all_dtypes
 from torch.testing._internal.common_quantization import (
@@ -6223,7 +6222,10 @@ class CommonTemplate:
             reference_in_float=False,
         )
 
-    @skipCUDAIfNoMagma
+    @unittest.skipIf(
+        TEST_WITH_ROCM and not torch.cuda.has_magma,
+        "ROCm hipsolver backend does not currently support eig",
+    )
     @skipIfMPS
     def test_linalg_eig_stride_consistency(self):
         def fn(x):
