@@ -32,7 +32,6 @@ from torch.testing._internal.common_utils import (
     skipIfRocm,
     TEST_CUDA_MEM_LEAK_CHECK,
     TEST_WITH_ASAN,
-    TEST_WITH_ROCM,
 )
 from torch.testing._internal.inductor_utils import (
     GPU_TYPE,
@@ -91,11 +90,6 @@ test_failures = {
         ("mps",), is_skip=True
     ),
 }
-
-if TEST_WITH_ROCM and not torch.cuda.has_magma:
-    test_failures["test_linalg_eig_stride_consistency_dynamic_shapes"] = TestFailure(
-        ("cuda",), is_skip=True
-    )
 
 if any(os.getenv("BUILD_ENVIRONMENT", "").endswith(x) for x in ("-debug", "-asan")):
     # Fails with TORCH_INTERNAL_ASSERT(!is_heap_allocated()), see https://github.com/pytorch/pytorch/issues/130073
