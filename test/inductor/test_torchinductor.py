@@ -6005,6 +6005,7 @@ class CommonTemplate:
             reference_in_float=False,
         )
 
+    @skipCUDAIfNoMagma
     @skipIfMPS
     def test_linalg_eig_stride_consistency(self):
         def fn(x):
