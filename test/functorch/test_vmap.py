@@ -59,7 +59,6 @@ from torch.testing._internal.common_device_type import (
     onlyCUDA,
     OpDTypes,
     ops,
-    skipCUDAIf,
     tol,
     toleranceOverride,
 )
@@ -5092,7 +5091,7 @@ class TestVmapOperatorsOpInfo(TestCase):
 
         test(self, op, tuple(inputs), in_dims=tuple(in_dims))
 
-    @skipCUDAIf(
+    @unittest.skipIf(
         TEST_WITH_ROCM and not torch.cuda.has_magma,
         "ROCm hipsolver backend does not currently support eig",
     )
