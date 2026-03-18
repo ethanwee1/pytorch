@@ -31,7 +31,7 @@ jobs:
       opt_out_experiments: lf
 
   linux-jammy-rocm-py3_10-inductor-build:
-    name: rocm-py3.10-inductor
+    name: linux-jammy-rocm-py3.10-mi200
     uses: ./.github/workflows/_linux-build.yml
     needs: get-label-type
     with:
@@ -49,7 +49,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
-    name: rocm-py3.10-inductor
+    name: linux-jammy-rocm-py3.10-mi200
     uses: ./.github/workflows/_rocm-test.yml
     needs: linux-jammy-rocm-py3_10-inductor-build
     with:
