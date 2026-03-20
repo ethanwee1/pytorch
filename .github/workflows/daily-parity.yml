@@ -1,8 +1,6 @@
 name: Daily Parity Report
 
 on:
-  schedule:
-    - cron: '0 10 * * *'  # 10 AM UTC (2 AM PST) daily
   workflow_dispatch:
     inputs:
       sha:
