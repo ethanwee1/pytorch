@@ -1,0 +1,145 @@
+name: Daily Parity Report
+
+on:
+  schedule:
+    - cron: '0 10 * * *'  # 10 AM UTC (2 AM PST) daily
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'PyTorch commit SHA (leave empty for latest green)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  generate-parity:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [mi200, mi300, mi355]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        working-directory: pytorch-unit-test-scripts
+        run: pip install -r requirements.txt
+
+      - name: Download artifacts
+        working-directory: pytorch-unit-test-scripts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          SHA_ARG=""
+          if [ -n "${{ inputs.sha }}" ]; then
+            SHA_ARG="--sha1 ${{ inputs.sha }}"
+          fi
+          python3 ./download_testlogs --arch ${{ matrix.arch }} \
+            --artifacts_only --ignore_status \
+            $SHA_ARG \
+            2>&1 | tee download_${{ matrix.arch }}.log
+
+      - name: Identify output folder and SHA
+        id: folder
+        working-directory: pytorch-unit-test-scripts
+        run: |
+          FOLDER=$(ls -dt [0-9]*_[0-9a-f]*/ 2>/dev/null | head -1 | sed 's:/$::')
+          if [ -z "$FOLDER" ]; then
+            echo "ERROR: No output folder found"
+            exit 1
+          fi
+          echo "folder=$FOLDER" >> "$GITHUB_OUTPUT"
+          SHA=$(echo "$FOLDER" | grep -oP '[0-9a-f]{40}')
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          DATE=$(TZ='America/Los_Angeles' date '+%Y%m%d')
+          echo "date=$DATE" >> "$GITHUB_OUTPUT"
+          echo "Output folder: $FOLDER, SHA: $SHA, Date: $DATE"
+
+      - name: Generate CSV
+        working-directory: pytorch-unit-test-scripts
+        run: |
+          FOLDER="${{ steps.folder.outputs.folder }}"
+          DATE="${{ steps.folder.outputs.date }}"
+          ARCH="${{ matrix.arch }}"
+          python3 -u summarize_xml_testreports.py \
+            --set1 "$FOLDER/rocm_xml_dir" \
+            --set2 "$FOLDER/cuda_xml_dir" \
+            --set1_name rocm --set2_name cuda \
+            --output_csv "$FOLDER/${DATE}_all_tests_status_${ARCH}.csv" \
+            --test_file_running_time_output_csv "$FOLDER/${DATE}_running_time_${ARCH}.csv" \
+            2>&1 | tee "$FOLDER/xml_processing_${DATE}.log"
+
+      - name: Upload CSV artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-csv-${{ matrix.arch }}
+          path: |
+            pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/*_all_tests_status_*.csv
+            pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/*_running_time_*.csv
+
+      - name: Upload SHA info
+        uses: actions/upload-artifact@v4
+        with:
+          name: sha-info-${{ matrix.arch }}
+          path: |
+            pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}
+          include-hidden-files: false
+
+  build-dashboard:
+    needs: generate-parity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install pandas
+        run: pip install pandas
+
+      - name: Download all CSV artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: csv-artifacts
+          pattern: parity-csv-*
+          merge-multiple: true
+
+      - name: List downloaded artifacts
+        run: find csv-artifacts -name "*.csv" -type f
+
+      - name: Generate dashboard
+        run: |
+          python3 pytorch-unit-test-scripts/generate_dashboard.py \
+            --csv-dir csv-artifacts \
+            --output-dir dashboard
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dashboard
+
+  deploy-dashboard:
+    needs: build-dashboard
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
