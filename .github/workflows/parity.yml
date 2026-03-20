@@ -35,7 +35,7 @@ on:
       include_logs:
         description: 'Download and include CI log files (.txt) in artifact'
         required: false
-        default: false
+        default: true
         type: boolean
       no_rocm:
         description: 'Skip ROCm artifact download'
