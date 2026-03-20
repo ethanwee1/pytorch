@@ -32,11 +32,6 @@ on:
         required: false
         default: false
         type: boolean
-      ignore_status:
-        description: 'Ignore workflow success status'
-        required: false
-        default: true
-        type: boolean
       artifacts_only:
         description: 'Only download artifacts (skip log files)'
         required: false
@@ -126,9 +121,7 @@ jobs:
           if [ "${{ inputs.exclude_default }}" = "true" ]; then
             ARGS="$ARGS --exclude_default"
           fi
-          if [ "${{ inputs.ignore_status }}" = "true" ]; then
-            ARGS="$ARGS --ignore_status"
-          fi
+          ARGS="$ARGS --ignore_status"
           if [ "${{ inputs.artifacts_only }}" = "true" ]; then
             ARGS="$ARGS --artifacts_only"
           fi
