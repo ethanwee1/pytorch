@@ -274,6 +274,30 @@ jobs:
 
           cat "${OUTPUT}.md" >> "$GITHUB_STEP_SUMMARY"
 
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          {
+            echo ""
+            echo "### ARTIFACTS"
+            echo ""
+            echo "| Artifact | Contents |"
+            echo "| --- | --- |"
+            for ARCH in $ARCHS; do
+              if [ -n "$CSV_NAME_INPUT" ]; then
+                NAME="${CSV_NAME_INPUT}_${ARCH}"
+              else
+                NAME="parity-csv-${ARCH}"
+              fi
+              echo "| [${NAME}](${RUN_URL}) | CSV, running time, logs for ${ARCH} |"
+            done
+            if [ -n "$CSV_NAME_INPUT" ]; then
+              SUMMARY_NAME="${CSV_NAME_INPUT}_summary"
+            else
+              SUMMARY_NAME="parity-summary"
+            fi
+            echo "| [${SUMMARY_NAME}](${RUN_URL}) | Combined summary (CSV + Markdown) |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload summary artifact
         uses: actions/upload-artifact@v4
         with:
