@@ -274,30 +274,6 @@ jobs:
 
           cat "${OUTPUT}.md" >> "$GITHUB_STEP_SUMMARY"
 
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          {
-            echo ""
-            echo "### ARTIFACTS"
-            echo ""
-            echo "| Artifact | Contents |"
-            echo "| --- | --- |"
-            for ARCH in $ARCHS; do
-              if [ -n "$CSV_NAME_INPUT" ]; then
-                NAME="${CSV_NAME_INPUT}_${ARCH}"
-              else
-                NAME="parity-csv-${ARCH}"
-              fi
-              echo "| [${NAME}](${RUN_URL}) | CSV, running time, logs for ${ARCH} |"
-            done
-            if [ -n "$CSV_NAME_INPUT" ]; then
-              SUMMARY_NAME="${CSV_NAME_INPUT}_summary"
-            else
-              SUMMARY_NAME="parity-summary"
-            fi
-            echo "| [${SUMMARY_NAME}](${RUN_URL}) | Combined summary (CSV + Markdown) |"
-            echo ""
-          } >> "$GITHUB_STEP_SUMMARY"
-
       - name: Upload summary artifact
         uses: actions/upload-artifact@v4
         with:
@@ -306,3 +282,20 @@ jobs:
           path: |
             pytorch-unit-test-scripts/*_summary.csv
             pytorch-unit-test-scripts/*_summary.md
+
+      - name: Add artifact links to summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ARTIFACTS_JSON=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts --paginate -q '.artifacts[] | {name, id}')
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts"
+
+          {
+            echo ""
+            echo "### ARTIFACTS"
+            echo ""
+            echo "| Artifact | Link |"
+            echo "| --- | --- |"
+            echo "$ARTIFACTS_JSON" | jq -r '"| \(.name) | [Download]('"${RUN_URL}"'/\(.id)) |"'
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
