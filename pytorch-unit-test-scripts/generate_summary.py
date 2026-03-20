@@ -15,7 +15,7 @@ WORKFLOW_DISPLAY = {
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='Generate a parity summary CSV from per-architecture test status CSVs'
+        description='Generate a parity summary from per-architecture test status CSVs'
     )
     parser.add_argument(
         '--csv', nargs='+', required=True,
@@ -36,8 +36,8 @@ def parse_args():
         help='Name used for set2 in CSV column headers (default: set2)'
     )
     parser.add_argument(
-        '--output', type=str, default='parity_summary.csv',
-        help='Output summary CSV path'
+        '--output', type=str, default='parity_summary',
+        help='Output path prefix (produces .csv and .md)'
     )
     return parser.parse_args()
 
@@ -191,6 +191,105 @@ def compute_overall_stats(rows, s1_col, s2_col, s1_time_col, s2_time_col, s1_nam
     return vals
 
 
+def fmt_val(v):
+    if isinstance(v, int):
+        return f'{v:,}'
+    return str(v)
+
+
+def build_rows(args, archs, arch_data):
+    """Return a list of (label, val_per_arch...) tuples and section markers."""
+    out = []
+
+    if args.sha:
+        out.append(('Commit SHA', [args.sha] * len(archs)))
+    if args.pr_id:
+        out.append(('PR ID', [args.pr_id] * len(archs)))
+    out.append((
+        'GPU (MI)',
+        [a.replace('mi', '').replace('MI', '') for a in archs],
+    ))
+
+    wf_keys = workflow_stats_keys(args.set1_name, args.set2_name)
+    for wf in WORKFLOWS:
+        out.append(('__section__', WORKFLOW_DISPLAY[wf]))
+        arch_stats = {}
+        for arch in archs:
+            d = arch_data[arch]
+            s1_col, s2_col, _, _ = d['cols']
+            wf_rows = [r for r in d['rows'] if r['work_flow_name'] == wf]
+            arch_stats[arch] = compute_workflow_stats(
+                wf_rows, s1_col, s2_col, args.set1_name, args.set2_name
+            )
+        for key in wf_keys:
+            out.append((key, [arch_stats[a][key] for a in archs]))
+
+    out.append(('__section__', 'OVERALL'))
+    ov_keys = overall_stats_keys(args.set1_name, args.set2_name)
+    arch_overall = {}
+    for arch in archs:
+        d = arch_data[arch]
+        s1_col, s2_col, s1_time, s2_time = d['cols']
+        arch_overall[arch] = compute_overall_stats(
+            d['rows'], s1_col, s2_col, s1_time, s2_time,
+            args.set1_name, args.set2_name,
+        )
+    for key in ov_keys:
+        out.append((key, [arch_overall[a][key] for a in archs]))
+    if args.sha:
+        out.append(('Commit ID Used', [args.sha] * len(archs)))
+
+    return out
+
+
+def write_csv(rows, archs, output_path):
+    csv_rows = []
+    csv_rows.append([''] + list(archs))
+    for label, vals in rows:
+        if label == '__section__':
+            csv_rows.append([])
+            csv_rows.append([vals])
+        else:
+            csv_rows.append([label] + list(vals))
+    csv_rows.append([])
+    with open(output_path, 'w', newline='') as f:
+        csv.writer(f).writerows(csv_rows)
+    print(f'CSV written to {output_path}')
+
+
+def write_markdown(rows, archs, output_path):
+    lines = []
+    current_section = []
+
+    def flush_table():
+        if not current_section:
+            return
+        header = '| Metric | ' + ' | '.join(archs) + ' |'
+        sep = '| :--- | ' + ' | '.join(['---:'] * len(archs)) + ' |'
+        lines.append(header)
+        lines.append(sep)
+        for label, vals in current_section:
+            formatted = [fmt_val(v) for v in vals]
+            lines.append(f'| {label} | ' + ' | '.join(formatted) + ' |')
+        lines.append('')
+        current_section.clear()
+
+    for label, vals in rows:
+        if label == '__section__':
+            flush_table()
+            lines.append(f'### {vals}')
+            lines.append('')
+        else:
+            current_section.append((label, vals))
+
+    flush_table()
+
+    md = '\n'.join(lines)
+    with open(output_path, 'w') as f:
+        f.write(md)
+    print(f'Markdown written to {output_path}')
+    return md
+
 
 def main():
     args = parse_args()
@@ -207,54 +306,14 @@ def main():
         cols = detect_columns(headers, args.set1_name, args.set2_name)
         arch_data[arch] = {'rows': rows, 'cols': cols}
 
-    out = []
+    data_rows = build_rows(args, archs, arch_data)
 
-    # ── Header ──
-    out.append([''] + archs)
-    if args.sha:
-        out.append(['Commit SHA'] + [args.sha] * len(archs))
-    if args.pr_id:
-        out.append(['PR ID'] + [args.pr_id] * len(archs))
-    out.append(
-        ['GPU (MI)'] + [a.replace('mi', '').replace('MI', '') for a in archs]
-    )
-    out.append([])
+    output_base = args.output
+    if output_base.endswith('.csv') or output_base.endswith('.md'):
+        output_base = output_base.rsplit('.', 1)[0]
 
-    # ── Per-workflow stats ──
-    wf_keys = workflow_stats_keys(args.set1_name, args.set2_name)
-    for wf in WORKFLOWS:
-        out.append([WORKFLOW_DISPLAY[wf]])
-        arch_stats = {}
-        for arch in archs:
-            d = arch_data[arch]
-            s1_col, s2_col, _, _ = d['cols']
-            wf_rows = [r for r in d['rows'] if r['work_flow_name'] == wf]
-            arch_stats[arch] = compute_workflow_stats(
-                wf_rows, s1_col, s2_col, args.set1_name, args.set2_name
-            )
-        for key in wf_keys:
-            out.append([key] + [arch_stats[a][key] for a in archs])
-        out.append([])
-
-    # ── Overall stats ──
-    ov_keys = overall_stats_keys(args.set1_name, args.set2_name)
-    arch_overall = {}
-    for arch in archs:
-        d = arch_data[arch]
-        s1_col, s2_col, s1_time, s2_time = d['cols']
-        arch_overall[arch] = compute_overall_stats(
-            d['rows'], s1_col, s2_col, s1_time, s2_time,
-            args.set1_name, args.set2_name,
-        )
-    for key in ov_keys:
-        out.append([key] + [arch_overall[a][key] for a in archs])
-    if args.sha:
-        out.append(['Commit ID Used'] + [args.sha] * len(archs))
-    out.append([])
-
-    with open(args.output, 'w', newline='') as f:
-        csv.writer(f).writerows(out)
-    print(f'Summary written to {args.output}')
+    write_csv(data_rows, archs, f'{output_base}.csv')
+    write_markdown(data_rows, archs, f'{output_base}.md')
 
 
 if __name__ == '__main__':

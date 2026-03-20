@@ -254,19 +254,23 @@ jobs:
           fi
 
           if [ -n "${{ inputs.csv_name }}" ]; then
-            OUTPUT="${{ inputs.csv_name }}_summary.csv"
+            OUTPUT="${{ inputs.csv_name }}_summary"
           else
             DATE=$(TZ='America/Los_Angeles' date '+%Y%m%d')
-            OUTPUT="${DATE}_parity_summary.csv"
+            OUTPUT="${DATE}_parity_summary"
           fi
           ARGS="$ARGS --output $OUTPUT"
 
           echo "Running: python3 generate_summary.py $ARGS"
           python3 generate_summary.py $ARGS
 
+          cat "${OUTPUT}.md" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload summary artifact
         uses: actions/upload-artifact@v4
         with:
           name: parity-summary
           retention-days: 1
-          path: pytorch-unit-test-scripts/*_summary.csv
+          path: |
+            pytorch-unit-test-scripts/*_summary.csv
+            pytorch-unit-test-scripts/*_summary.md
