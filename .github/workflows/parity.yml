@@ -32,8 +32,8 @@ on:
         required: false
         default: false
         type: boolean
-      artifacts_only:
-        description: 'Only download artifacts (skip log files)'
+      include_logs:
+        description: 'Download and include CI log files (.txt) in artifact'
         required: false
         default: false
         type: boolean
@@ -127,7 +127,7 @@ jobs:
             ARGS="$ARGS --exclude_default"
           fi
           ARGS="$ARGS --ignore_status"
-          if [ "${{ inputs.artifacts_only }}" = "true" ]; then
+          if [ "${{ inputs.include_logs }}" != "true" ]; then
             ARGS="$ARGS --artifacts_only"
           fi
           if [ "${{ inputs.no_rocm }}" = "true" ]; then
@@ -154,6 +154,7 @@ jobs:
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           DATE=$(TZ='America/Los_Angeles' date '+%Y%m%d')
           echo "date=$DATE" >> "$GITHUB_OUTPUT"
+          mv download_${{ matrix.arch }}.log "$FOLDER/" 2>/dev/null || true
           echo "Output folder: $FOLDER, SHA: $SHA, Date: $DATE"
 
       - name: Generate CSV
@@ -183,7 +184,7 @@ jobs:
           echo "Running: python3 -u summarize_xml_testreports.py $ARGS"
           python3 -u summarize_xml_testreports.py $ARGS 2>&1 | tee "$FOLDER/xml_processing_${DATE}.log"
 
-      - name: Upload CSV artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.csv_name && format('{0}_{1}', inputs.csv_name, matrix.arch) || format('parity-csv-{0}', matrix.arch) }}
@@ -191,6 +192,7 @@ jobs:
           path: |
             pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/*.csv
             pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/*.log
+            pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/*.txt
 
   generate-summary:
     needs: [setup-matrix, generate-parity]
