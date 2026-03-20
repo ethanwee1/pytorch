@@ -37,13 +37,13 @@ on:
         required: false
         default: true
         type: boolean
-      no_rocm:
-        description: 'Skip ROCm artifact download'
+      skip_rocm:
+        description: 'Skip ROCm download'
         required: false
         default: false
         type: boolean
-      no_cuda:
-        description: 'Skip CUDA artifact download'
+      skip_cuda:
+        description: 'Skip CUDA download'
         required: false
         default: false
         type: boolean
@@ -130,10 +130,10 @@ jobs:
           if [ "${{ inputs.include_logs }}" != "true" ]; then
             ARGS="$ARGS --artifacts_only"
           fi
-          if [ "${{ inputs.no_rocm }}" = "true" ]; then
+          if [ "${{ inputs.skip_rocm }}" = "true" ]; then
             ARGS="$ARGS --no_rocm"
           fi
-          if [ "${{ inputs.no_cuda }}" = "true" ]; then
+          if [ "${{ inputs.skip_cuda }}" = "true" ]; then
             ARGS="$ARGS --no_cuda"
           fi
 
