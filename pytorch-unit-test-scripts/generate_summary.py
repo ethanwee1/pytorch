@@ -191,6 +191,28 @@ def compute_overall_stats(rows, s1_col, s2_col, s1_time_col, s2_time_col, s1_nam
     return vals
 
 
+def collect_failed_tests(arch_data, archs, s1_name, s2_name):
+    """Return a list of failed test rows across all architectures."""
+    failed = []
+    for arch in archs:
+        d = arch_data[arch]
+        s1_col, s2_col, _, _ = d['cols']
+        for r in d['rows']:
+            s1 = r[s1_col].strip()
+            s2 = r[s2_col].strip()
+            if s1 == 'FAILED' or s2 == 'FAILED':
+                failed.append({
+                    'arch': arch,
+                    'test_file': r.get('test_file', ''),
+                    'test_class': r.get('test_class', ''),
+                    'test_name': r.get('test_name', ''),
+                    'workflow': r.get('work_flow_name', ''),
+                    f'status_{s1_name}': s1,
+                    f'status_{s2_name}': s2,
+                })
+    return failed
+
+
 def fmt_val(v):
     if isinstance(v, int):
         return f'{v:,}'
@@ -242,7 +264,7 @@ def build_rows(args, archs, arch_data):
     return out
 
 
-def write_csv(rows, archs, output_path):
+def write_csv(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_name='set2'):
     csv_rows = []
     csv_rows.append([''] + list(archs))
     for label, vals in rows:
@@ -252,12 +274,25 @@ def write_csv(rows, archs, output_path):
         else:
             csv_rows.append([label] + list(vals))
     csv_rows.append([])
+
+    if failed_tests:
+        csv_rows.append(['FAILED TESTS'])
+        csv_rows.append(['Arch', 'Workflow', 'Test File', 'Test Class',
+                         'Test Name', f'Status ({s1_name})', f'Status ({s2_name})'])
+        for t in failed_tests:
+            csv_rows.append([
+                t['arch'], t['workflow'], t['test_file'],
+                t['test_class'], t['test_name'],
+                t[f'status_{s1_name}'], t[f'status_{s2_name}'],
+            ])
+        csv_rows.append([])
+
     with open(output_path, 'w', newline='') as f:
         csv.writer(f).writerows(csv_rows)
     print(f'CSV written to {output_path}')
 
 
-def write_markdown(rows, archs, output_path):
+def write_markdown(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_name='set2'):
     lines = []
     current_section = []
 
@@ -284,6 +319,26 @@ def write_markdown(rows, archs, output_path):
 
     flush_table()
 
+    if failed_tests:
+        lines.append('### FAILED TESTS')
+        lines.append('')
+        cols = ['Arch', 'Workflow', 'Test File', 'Test Class', 'Test Name',
+                f'Status ({s1_name})', f'Status ({s2_name})']
+        lines.append('| ' + ' | '.join(cols) + ' |')
+        lines.append('| ' + ' | '.join(['---'] * len(cols)) + ' |')
+        for t in failed_tests:
+            lines.append(
+                f"| {t['arch']} | {t['workflow']} | {t['test_file']} "
+                f"| {t['test_class']} | {t['test_name']} "
+                f"| {t[f'status_{s1_name}']} | {t[f'status_{s2_name}']} |"
+            )
+        lines.append('')
+    else:
+        lines.append('### FAILED TESTS')
+        lines.append('')
+        lines.append('No failed tests found.')
+        lines.append('')
+
     md = '\n'.join(lines)
     with open(output_path, 'w') as f:
         f.write(md)
@@ -307,13 +362,14 @@ def main():
         arch_data[arch] = {'rows': rows, 'cols': cols}
 
     data_rows = build_rows(args, archs, arch_data)
+    failed = collect_failed_tests(arch_data, archs, args.set1_name, args.set2_name)
 
     output_base = args.output
     if output_base.endswith('.csv') or output_base.endswith('.md'):
         output_base = output_base.rsplit('.', 1)[0]
 
-    write_csv(data_rows, archs, f'{output_base}.csv')
-    write_markdown(data_rows, archs, f'{output_base}.md')
+    write_csv(data_rows, archs, f'{output_base}.csv', failed, args.set1_name, args.set2_name)
+    write_markdown(data_rows, archs, f'{output_base}.md', failed, args.set1_name, args.set2_name)
 
 
 if __name__ == '__main__':
