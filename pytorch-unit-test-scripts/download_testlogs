@@ -240,7 +240,6 @@ def main():
     global ROCmWorkflowNames
     arch = args.arch  # 'mi200', 'mi300', 'mi355', or 'navi31'
     if arch == 'mi355':
-        # MI355 jobs have moved to trunk workflow (same as CUDA)
         ROCmWorkflowNames = {
             "default": "trunk",
             "distributed": "trunk",
@@ -324,8 +323,21 @@ def main():
         # find distributed test in periodic workflow with success status
         error_msg="Error: Periodic workflow not found in scanned workflow runs."
         #https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-repository
-        periodic_wf = download_workflow_run(created=args.created, max_pages=args.max_pages, workflow=ROCmWorkflowNames["distributed"], sha=periodic_sha, ignore_status=args.ignore_status, status=status, error_msg=error_msg)
+        mi355_fallback_used = False
+        try:
+            periodic_wf = download_workflow_run(created=args.created, max_pages=args.max_pages, workflow=ROCmWorkflowNames["distributed"], sha=periodic_sha, ignore_status=args.ignore_status, status=status, error_msg=error_msg)
+        except (IndexError, Exception):
+            periodic_wf = None
+        if periodic_wf is None and arch == 'mi355':
+            fallback = "periodic-rocm-mi355"
+            print(f"Distributed not found in {ROCmWorkflowNames['distributed']}, falling back to {fallback}")
+            periodic_wf = download_workflow_run(created=args.created, max_pages=args.max_pages, workflow=fallback, sha=periodic_sha, ignore_status=args.ignore_status, status=status, error_msg=error_msg)
+            mi355_fallback_used = True
+        if periodic_wf is None:
+            raise Exception(error_msg)
         print(f"Using workflow with id:{periodic_wf['id']} as periodic_wf")
+
+        dist_job_prefix = "linux-noble-rocm-py3.12-mi355" if mi355_fallback_used else rocm_job_prefix['distributed']
 
         folder_list = create_test_folder(periodic_wf)
 
@@ -337,7 +349,7 @@ def main():
         if not args.artifacts_only:
             dist_shards = rocm_shards["distributed"]
             test_log_list_rocm_distributed = [
-                [f"rocm_dist{i}.txt", f"{rocm_job_prefix['distributed']} / test (distributed, {i}, {dist_shards}"]
+                [f"rocm_dist{i}.txt", f"{dist_job_prefix} / test (distributed, {i}, {dist_shards}"]
                 for i in range(1, dist_shards + 1)
             ]
             download_logs(periodic_wf, test_log_list_rocm_distributed, folder_list[0])
