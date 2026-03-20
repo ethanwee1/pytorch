@@ -13,9 +13,9 @@ on:
         required: false
         type: string
       arch:
-        description: 'ROCm architectures (comma-separated)'
+        description: 'ROCm architectures (comma or space separated)'
         required: false
-        default: 'mi200,mi300,mi355'
+        default: 'mi355, mi300, mi200'
         type: string
       exclude_distributed:
         description: 'Exclude distributed tests'
@@ -77,7 +77,8 @@ jobs:
         id: parse
         run: |
           ARCHS="${{ inputs.arch }}"
-          JSON=$(echo "$ARCHS" | tr ',' '\n' | sed 's/^/"/;s/$/"/' | paste -sd',' | sed 's/^/[/;s/$/]/')
+          ARCHS=$(echo "$ARCHS" | tr ',[:space:]' '\n' | sed '/^$/d' | tr '\n' ' ')
+          JSON=$(echo "$ARCHS" | tr ' ' '\n' | sed '/^$/d' | sed 's/^/"/;s/$/"/' | paste -sd',' | sed 's/^/[/;s/$/]/')
           echo "matrix=$JSON" >> "$GITHUB_OUTPUT"
           echo "Architectures: $JSON"
 
@@ -188,6 +189,84 @@ jobs:
           name: parity-csv-${{ matrix.arch }}
           retention-days: 1
           path: |
-            pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/*_all_tests_status_*.csv
-            pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/*_running_time_*.csv
+            pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/*.csv
             pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/*.log
+
+  generate-summary:
+    needs: [setup-matrix, generate-parity]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Download all per-arch CSV artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: parity-csv-*
+          path: artifacts
+
+      - name: Generate summary
+        working-directory: pytorch-unit-test-scripts
+        run: |
+          ARCHS="${{ inputs.arch }}"
+          SHA="${{ inputs.sha }}"
+          PR_ID="${{ inputs.pr_id }}"
+          SET1="${{ inputs.set1_name }}"
+          SET2="${{ inputs.set2_name }}"
+
+          ARCHS=$(echo "$ARCHS" | tr ',[:space:]' ' ')
+          CSV_ARGS=""
+          ARCH_ARGS=""
+          for ARCH in $ARCHS; do
+            CSV=$(find ../artifacts/parity-csv-${ARCH}/ -name "*.csv" ! -name "*_running_time*" ! -name "*_summary*" | head -1)
+            if [ -z "$CSV" ]; then
+              echo "WARNING: No CSV found for $ARCH, skipping"
+              continue
+            fi
+            echo "Found CSV for $ARCH: $CSV"
+            CSV_ARGS="$CSV_ARGS $CSV"
+            ARCH_ARGS="$ARCH_ARGS $ARCH"
+          done
+
+          if [ -z "$CSV_ARGS" ]; then
+            echo "ERROR: No CSVs found for any architecture"
+            exit 1
+          fi
+
+          ARGS="--csv $CSV_ARGS --arch $ARCH_ARGS"
+          ARGS="$ARGS --set1_name $SET1 --set2_name $SET2"
+
+          if [ -n "$SHA" ]; then
+            ARGS="$ARGS --sha $SHA"
+          else
+            DETECTED_SHA=$(basename $(find ../artifacts/ -name "*.csv" | head -1) | grep -oP '[0-9a-f]{40}' || true)
+            if [ -n "$DETECTED_SHA" ]; then
+              ARGS="$ARGS --sha $DETECTED_SHA"
+            fi
+          fi
+          if [ -n "$PR_ID" ]; then
+            ARGS="$ARGS --pr_id $PR_ID"
+          fi
+
+          if [ -n "${{ inputs.csv_name }}" ]; then
+            OUTPUT="${{ inputs.csv_name }}_summary.csv"
+          else
+            DATE=$(TZ='America/Los_Angeles' date '+%Y%m%d')
+            OUTPUT="${DATE}_parity_summary.csv"
+          fi
+          ARGS="$ARGS --output $OUTPUT"
+
+          echo "Running: python3 generate_summary.py $ARGS"
+          python3 generate_summary.py $ARGS
+
+      - name: Upload summary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-summary
+          retention-days: 1
+          path: pytorch-unit-test-scripts/*_summary.csv
