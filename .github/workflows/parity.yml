@@ -62,6 +62,10 @@ on:
         description: 'Status filter (e.g. SKIPPED-NOT_SKIPPED-MISSED-NOT_MISSED)'
         required: false
         type: string
+      csv_name:
+        description: 'Custom CSV filename prefix (default: YYYYMMDD_all_tests_status_ARCH)'
+        required: false
+        type: string
 
 jobs:
   setup-matrix:
@@ -158,12 +162,18 @@ jobs:
           DATE="${{ steps.folder.outputs.date }}"
           ARCH="${{ matrix.arch }}"
 
+          if [ -n "${{ inputs.csv_name }}" ]; then
+            CSV_NAME="${{ inputs.csv_name }}_${ARCH}"
+          else
+            CSV_NAME="${DATE}_all_tests_status_${ARCH}"
+          fi
+
           ARGS="--set1 $FOLDER/rocm_xml_dir"
           ARGS="$ARGS --set2 $FOLDER/cuda_xml_dir"
           ARGS="$ARGS --set1_name ${{ inputs.set1_name }}"
           ARGS="$ARGS --set2_name ${{ inputs.set2_name }}"
-          ARGS="$ARGS --output_csv $FOLDER/${DATE}_all_tests_status_${ARCH}.csv"
-          ARGS="$ARGS --test_file_running_time_output_csv $FOLDER/${DATE}_running_time_${ARCH}.csv"
+          ARGS="$ARGS --output_csv $FOLDER/${CSV_NAME}.csv"
+          ARGS="$ARGS --test_file_running_time_output_csv $FOLDER/${CSV_NAME}_running_time.csv"
 
           if [ -n "${{ inputs.filter }}" ]; then
             ARGS="$ARGS --filter ${{ inputs.filter }}"
