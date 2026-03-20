@@ -1,25 +1,94 @@
-name: Daily Parity Report
+name: Parity Report
 
 on:
   workflow_dispatch:
     inputs:
+      # download_testlogs flags
       sha:
         description: 'PyTorch commit SHA (leave empty for latest green)'
         required: false
         type: string
-
-permissions:
-  contents: write
-  pages: write
-  id-token: write
+      pr_id:
+        description: 'Pull request ID (alternative to SHA)'
+        required: false
+        type: string
+      arch:
+        description: 'ROCm architectures (comma-separated)'
+        required: false
+        default: 'mi200,mi300,mi355'
+        type: string
+      exclude_distributed:
+        description: 'Exclude distributed tests'
+        required: false
+        default: false
+        type: boolean
+      exclude_inductor:
+        description: 'Exclude inductor tests'
+        required: false
+        default: false
+        type: boolean
+      exclude_default:
+        description: 'Exclude default tests'
+        required: false
+        default: false
+        type: boolean
+      ignore_status:
+        description: 'Ignore workflow success status'
+        required: false
+        default: true
+        type: boolean
+      artifacts_only:
+        description: 'Only download artifacts (skip log files)'
+        required: false
+        default: false
+        type: boolean
+      no_rocm:
+        description: 'Skip ROCm artifact download'
+        required: false
+        default: false
+        type: boolean
+      no_cuda:
+        description: 'Skip CUDA artifact download'
+        required: false
+        default: false
+        type: boolean
+      # summarize_xml_testreports flags
+      set1_name:
+        description: 'Column header name for set1 (e.g. rocm, mi300)'
+        required: false
+        default: 'rocm'
+        type: string
+      set2_name:
+        description: 'Column header name for set2 (e.g. cuda, mi355)'
+        required: false
+        default: 'cuda'
+        type: string
+      filter:
+        description: 'Status filter (e.g. SKIPPED-NOT_SKIPPED-MISSED-NOT_MISSED)'
+        required: false
+        type: string
 
 jobs:
+  setup-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      arch-matrix: ${{ steps.parse.outputs.matrix }}
+    steps:
+      - name: Parse arch input into matrix
+        id: parse
+        run: |
+          ARCHS="${{ inputs.arch }}"
+          JSON=$(echo "$ARCHS" | tr ',' '\n' | sed 's/^/"/;s/$/"/' | paste -sd',' | sed 's/^/[/;s/$/]/')
+          echo "matrix=$JSON" >> "$GITHUB_OUTPUT"
+          echo "Architectures: $JSON"
+
   generate-parity:
+    needs: setup-matrix
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        arch: [mi200, mi300, mi355]
+        arch: ${{ fromJson(needs.setup-matrix.outputs.arch-matrix) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -40,16 +109,40 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
-          SHA_ARG=""
-          if [ -n "${{ inputs.sha }}" ]; then
-            SHA_ARG="--sha1 ${{ inputs.sha }}"
-          fi
-          python3 ./download_testlogs --arch ${{ matrix.arch }} \
-            --artifacts_only --ignore_status \
-            $SHA_ARG \
-            2>&1 | tee download_${{ matrix.arch }}.log
+          ARGS="--arch ${{ matrix.arch }}"
 
-      - name: Identify output folder and SHA
+          if [ -n "${{ inputs.sha }}" ]; then
+            ARGS="$ARGS --sha1 ${{ inputs.sha }}"
+          fi
+          if [ -n "${{ inputs.pr_id }}" ]; then
+            ARGS="$ARGS --pr_id ${{ inputs.pr_id }}"
+          fi
+          if [ "${{ inputs.exclude_distributed }}" = "true" ]; then
+            ARGS="$ARGS --exclude_distributed"
+          fi
+          if [ "${{ inputs.exclude_inductor }}" = "true" ]; then
+            ARGS="$ARGS --exclude_inductor"
+          fi
+          if [ "${{ inputs.exclude_default }}" = "true" ]; then
+            ARGS="$ARGS --exclude_default"
+          fi
+          if [ "${{ inputs.ignore_status }}" = "true" ]; then
+            ARGS="$ARGS --ignore_status"
+          fi
+          if [ "${{ inputs.artifacts_only }}" = "true" ]; then
+            ARGS="$ARGS --artifacts_only"
+          fi
+          if [ "${{ inputs.no_rocm }}" = "true" ]; then
+            ARGS="$ARGS --no_rocm"
+          fi
+          if [ "${{ inputs.no_cuda }}" = "true" ]; then
+            ARGS="$ARGS --no_cuda"
+          fi
+
+          echo "Running: python3 ./download_testlogs $ARGS"
+          python3 ./download_testlogs $ARGS 2>&1 | tee download_${{ matrix.arch }}.log
+
+      - name: Identify output folder
         id: folder
         working-directory: pytorch-unit-test-scripts
         run: |
@@ -71,13 +164,20 @@ jobs:
           FOLDER="${{ steps.folder.outputs.folder }}"
           DATE="${{ steps.folder.outputs.date }}"
           ARCH="${{ matrix.arch }}"
-          python3 -u summarize_xml_testreports.py \
-            --set1 "$FOLDER/rocm_xml_dir" \
-            --set2 "$FOLDER/cuda_xml_dir" \
-            --set1_name rocm --set2_name cuda \
-            --output_csv "$FOLDER/${DATE}_all_tests_status_${ARCH}.csv" \
-            --test_file_running_time_output_csv "$FOLDER/${DATE}_running_time_${ARCH}.csv" \
-            2>&1 | tee "$FOLDER/xml_processing_${DATE}.log"
+
+          ARGS="--set1 $FOLDER/rocm_xml_dir"
+          ARGS="$ARGS --set2 $FOLDER/cuda_xml_dir"
+          ARGS="$ARGS --set1_name ${{ inputs.set1_name }}"
+          ARGS="$ARGS --set2_name ${{ inputs.set2_name }}"
+          ARGS="$ARGS --output_csv $FOLDER/${DATE}_all_tests_status_${ARCH}.csv"
+          ARGS="$ARGS --test_file_running_time_output_csv $FOLDER/${DATE}_running_time_${ARCH}.csv"
+
+          if [ -n "${{ inputs.filter }}" ]; then
+            ARGS="$ARGS --filter ${{ inputs.filter }}"
+          fi
+
+          echo "Running: python3 -u summarize_xml_testreports.py $ARGS"
+          python3 -u summarize_xml_testreports.py $ARGS 2>&1 | tee "$FOLDER/xml_processing_${DATE}.log"
 
       - name: Upload CSV artifacts
         uses: actions/upload-artifact@v4
@@ -86,58 +186,4 @@ jobs:
           path: |
             pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/*_all_tests_status_*.csv
             pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/*_running_time_*.csv
-
-      - name: Upload SHA info
-        uses: actions/upload-artifact@v4
-        with:
-          name: sha-info-${{ matrix.arch }}
-          path: |
-            pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}
-          include-hidden-files: false
-
-  build-dashboard:
-    needs: generate-parity
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install pandas
-        run: pip install pandas
-
-      - name: Download all CSV artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: csv-artifacts
-          pattern: parity-csv-*
-          merge-multiple: true
-
-      - name: List downloaded artifacts
-        run: find csv-artifacts -name "*.csv" -type f
-
-      - name: Generate dashboard
-        run: |
-          python3 pytorch-unit-test-scripts/generate_dashboard.py \
-            --csv-dir csv-artifacts \
-            --output-dir dashboard
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: dashboard
-
-  deploy-dashboard:
-    needs: build-dashboard
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+            pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/*.log
