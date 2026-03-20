@@ -186,7 +186,7 @@ jobs:
       - name: Upload CSV artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: parity-csv-${{ matrix.arch }}
+          name: ${{ inputs.csv_name && format('{0}_{1}', inputs.csv_name, matrix.arch) || format('parity-csv-{0}', matrix.arch) }}
           retention-days: 1
           path: |
             pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/*.csv
@@ -207,7 +207,7 @@ jobs:
       - name: Download all per-arch CSV artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: parity-csv-*
+          pattern: ${{ inputs.csv_name && format('{0}_*', inputs.csv_name) || 'parity-csv-*' }}
           path: artifacts
 
       - name: Generate summary
@@ -222,8 +222,14 @@ jobs:
           ARCHS=$(echo "$ARCHS" | tr ',[:space:]' ' ')
           CSV_ARGS=""
           ARCH_ARGS=""
+          CSV_NAME_INPUT="${{ inputs.csv_name }}"
           for ARCH in $ARCHS; do
-            CSV=$(find ../artifacts/parity-csv-${ARCH}/ -name "*.csv" ! -name "*_running_time*" ! -name "*_summary*" | head -1)
+            if [ -n "$CSV_NAME_INPUT" ]; then
+              ARTIFACT_DIR="../artifacts/${CSV_NAME_INPUT}_${ARCH}"
+            else
+              ARTIFACT_DIR="../artifacts/parity-csv-${ARCH}"
+            fi
+            CSV=$(find "$ARTIFACT_DIR"/ -name "*.csv" ! -name "*_running_time*" ! -name "*_summary*" 2>/dev/null | head -1)
             if [ -z "$CSV" ]; then
               echo "WARNING: No CSV found for $ARCH, skipping"
               continue
@@ -269,7 +275,7 @@ jobs:
       - name: Upload summary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: parity-summary
+          name: ${{ inputs.csv_name && format('{0}_summary', inputs.csv_name) || 'parity-summary' }}
           retention-days: 1
           path: |
             pytorch-unit-test-scripts/*_summary.csv
