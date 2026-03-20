@@ -176,6 +176,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: parity-csv-${{ matrix.arch }}
+          retention-days: 1
           path: |
             pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/*_all_tests_status_*.csv
             pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/*_running_time_*.csv
