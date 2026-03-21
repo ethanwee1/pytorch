@@ -224,9 +224,9 @@ def build_rows(args, archs, arch_data):
     out = []
 
     if args.sha:
-        out.append(('Commit SHA', [args.sha] * len(archs)))
+        out.append(('__header__', f'Commit SHA: {args.sha}'))
     if args.pr_id:
-        out.append(('PR ID', [args.pr_id] * len(archs)))
+        out.append(('__header__', f'PR ID: {args.pr_id}'))
     out.append((
         'GPU (MI)',
         [a.replace('mi', '').replace('MI', '') for a in archs],
@@ -258,9 +258,6 @@ def build_rows(args, archs, arch_data):
         )
     for key in ov_keys:
         out.append((key, [arch_overall[a][key] for a in archs]))
-    if args.sha:
-        out.append(('Commit ID Used', [args.sha] * len(archs)))
-
     return out
 
 
@@ -268,7 +265,9 @@ def write_csv(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_na
     csv_rows = []
     csv_rows.append([''] + list(archs))
     for label, vals in rows:
-        if label == '__section__':
+        if label == '__header__':
+            csv_rows.append([vals])
+        elif label == '__section__':
             csv_rows.append([])
             csv_rows.append([vals])
         else:
@@ -310,7 +309,11 @@ def write_markdown(rows, archs, output_path, failed_tests=None, s1_name='set1', 
         current_section.clear()
 
     for label, vals in rows:
-        if label == '__section__':
+        if label == '__header__':
+            flush_table()
+            lines.append(f'**{vals}**')
+            lines.append('')
+        elif label == '__section__':
             flush_table()
             lines.append(f'### {vals}')
             lines.append('')
