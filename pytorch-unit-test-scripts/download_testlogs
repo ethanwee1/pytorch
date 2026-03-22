@@ -245,8 +245,14 @@ def main():
             "distributed": "trunk",
             "inductor": "inductor-rocm-mi355"
         }
+    elif arch == 'mi200':
+        ROCmWorkflowNames = {
+            "default": "trunk-rocm-sandbox",
+            "distributed": "trunk-rocm-sandbox",
+            "inductor": "trunk-rocm-sandbox"
+        }
     else:
-        # MI200, MI300, and navi31 use dedicated ROCm workflows
+        # MI300 and navi31 use dedicated ROCm workflows
         ROCmWorkflowNames = {
             "default": f"rocm-{arch}",
             "distributed": f"periodic-rocm-{arch}",
@@ -259,7 +265,7 @@ def main():
         "mi200": {
             "default": "linux-jammy-rocm-py3.10",
             "distributed": "linux-jammy-rocm-py3.10",
-            "inductor": "rocm-py3.10-inductor"
+            "inductor": "linux-jammy-rocm-py3.10"
         },
         "mi300": {
             "default": "linux-noble-rocm-py3.12-mi300",
