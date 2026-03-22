@@ -370,6 +370,13 @@ jobs:
           path: |
             pytorch-unit-test-scripts/*_summary.csv
             pytorch-unit-test-scripts/*_summary.md
+
+      - name: Upload dashboard artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.csv_name && format('{0}_dashboard', inputs.csv_name) || 'parity-dashboard' }}
+          retention-days: 1
+          path: |
             pytorch-unit-test-scripts/*_dashboard.html
 
       - name: Add artifact links to summary
@@ -378,6 +385,15 @@ jobs:
         run: |
           ARTIFACTS_JSON=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts --paginate -q '.artifacts[] | {name, id}')
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts"
+
+          DASHBOARD_ID=$(echo "$ARTIFACTS_JSON" | jq -r 'select(.name | test("dashboard")) | .id')
+          if [ -n "$DASHBOARD_ID" ]; then
+            {
+              echo ""
+              echo "> **[Open Interactive Dashboard](${RUN_URL}/${DASHBOARD_ID})** — download and open in browser for filterable skip reasons, failed tests, and test explorer"
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
           {
             echo ""
