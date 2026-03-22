@@ -435,7 +435,10 @@ function renderAllTests() {
   h += '<select id="filter-wf"><option value="">All workflows</option>';
   WORKFLOWS.forEach(wf => h += `<option value="${wf}">${WF_DISPLAY[wf]}</option>`);
   h += '</select>';
-  h += '<select id="filter-status"><option value="">All statuses</option>';
+  h += '<select id="filter-status-s1"><option value="">All ' + SET1 + '</option>';
+  ['PASSED','SKIPPED','FAILED','MISSED','XFAILED'].forEach(s => h += `<option value="${s}">${s}</option>`);
+  h += '</select>';
+  h += '<select id="filter-status-s2"><option value="">All ' + SET2 + '</option>';
   ['PASSED','SKIPPED','FAILED','MISSED','XFAILED'].forEach(s => h += `<option value="${s}">${s}</option>`);
   h += '</select>';
   h += '<select id="filter-reason"><option value="">All skip reasons</option><option value="__empty__">(no reason)</option>';
@@ -451,7 +454,8 @@ function renderAllTests() {
   const search = document.getElementById('test-search');
   const fArch = document.getElementById('filter-arch');
   const fWf = document.getElementById('filter-wf');
-  const fStatus = document.getElementById('filter-status');
+  const fStatusS1 = document.getElementById('filter-status-s1');
+  const fStatusS2 = document.getElementById('filter-status-s2');
   const fReason = document.getElementById('filter-reason');
   const fNew = document.getElementById('filter-new');
 
@@ -459,14 +463,16 @@ function renderAllTests() {
     const q = search.value.toLowerCase();
     const arch = fArch.value;
     const wf = fWf.value;
-    const status = fStatus.value;
+    const statusS1 = fStatusS1.value;
+    const statusS2 = fStatusS2.value;
     const reason = fReason.value;
     const newOnly = fNew.checked;
 
     filteredTests = ALL_TESTS.filter(t => {
       if (arch && t.arch !== arch) return false;
       if (wf && t.wf !== wf) return false;
-      if (status && t.s1 !== status && t.s2 !== status) return false;
+      if (statusS1 && t.s1 !== statusS1) return false;
+      if (statusS2 && t.s2 !== statusS2) return false;
       if (reason === '__empty__' && t.sr) return false;
       if (reason && reason !== '__empty__' && t.sr !== reason) return false;
       if (newOnly && !t.new) return false;
@@ -506,7 +512,7 @@ function renderAllTests() {
   window.prevPage = () => { if (currentPage > 0) { currentPage--; renderPage(); } };
   window.nextPage = () => { if ((currentPage + 1) * PAGE_SIZE < filteredTests.length) { currentPage++; renderPage(); } };
 
-  [search, fArch, fWf, fStatus, fReason, fNew].forEach(el => {
+  [search, fArch, fWf, fStatusS1, fStatusS2, fReason, fNew].forEach(el => {
     el.addEventListener(el.type === 'checkbox' ? 'change' : 'input', applyFilters);
   });
 
