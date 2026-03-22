@@ -157,6 +157,45 @@ jobs:
           mv download_${{ matrix.arch }}.log "$FOLDER/" 2>/dev/null || true
           echo "Output folder: $FOLDER, SHA: $SHA, Date: $DATE"
 
+      - name: Download previous week CSV
+        id: prev
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ARCH="${{ matrix.arch }}"
+          mkdir -p prev_csv
+
+          # Try 1: Download from parity-input release (user-edited CSV)
+          echo "Checking parity-input release for previous CSV..."
+          gh release download parity-input -p "*.csv" -D prev_csv/ -R ${{ github.repository }} 2>/dev/null || true
+
+          PREV=$(find prev_csv/ -name "*.csv" 2>/dev/null | head -1)
+          if [ -n "$PREV" ]; then
+            echo "Found CSV from parity-input release: $PREV"
+            echo "prev_csv=$PREV" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Try 2: Auto-detect last successful parity run
+          echo "No release found, auto-detecting last successful parity run..."
+          PREV_RUN=$(gh run list --workflow=parity.yml --status=success --limit=1 --json databaseId -q '.[0].databaseId' 2>/dev/null || true)
+
+          if [ -n "$PREV_RUN" ]; then
+            echo "Downloading from previous run $PREV_RUN..."
+            PATTERN="${{ inputs.csv_name && format('{0}_{1}', inputs.csv_name, matrix.arch) || format('parity-csv-{0}', matrix.arch) }}"
+            gh run download "$PREV_RUN" --pattern "$PATTERN" --dir prev_csv/ 2>/dev/null || true
+
+            PREV=$(find prev_csv/ -name "*.csv" ! -name "*_running_time*" ! -name "*_summary*" 2>/dev/null | head -1)
+            if [ -n "$PREV" ]; then
+              echo "Found CSV from previous run: $PREV"
+              echo "prev_csv=$PREV" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          echo "No previous CSV found, skip_reason and existed_last_week will be empty"
+          echo "prev_csv=" >> "$GITHUB_OUTPUT"
+
       - name: Generate CSV
         working-directory: pytorch-unit-test-scripts
         run: |
@@ -176,6 +215,10 @@ jobs:
           ARGS="$ARGS --set2_name ${{ inputs.set2_name }}"
           ARGS="$ARGS --output_csv $FOLDER/${CSV_NAME}.csv"
           ARGS="$ARGS --test_file_running_time_output_csv $FOLDER/${CSV_NAME}_running_time.csv"
+
+          if [ -n "${{ steps.prev.outputs.prev_csv }}" ]; then
+            ARGS="$ARGS --prev_week_csv ../${{ steps.prev.outputs.prev_csv }}"
+          fi
 
           if [ -n "${{ inputs.filter }}" ]; then
             ARGS="$ARGS --filter ${{ inputs.filter }}"
