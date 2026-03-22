@@ -317,6 +317,51 @@ jobs:
 
           cat "${OUTPUT}.md" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Generate dashboard
+        working-directory: pytorch-unit-test-scripts
+        run: |
+          ARCHS="${{ inputs.arch }}"
+          SHA="${{ inputs.sha }}"
+          PR_ID="${{ inputs.pr_id }}"
+          SET1="${{ inputs.set1_name }}"
+          SET2="${{ inputs.set2_name }}"
+
+          ARCHS=$(echo "$ARCHS" | tr ',[:space:]' ' ')
+          CSV_ARGS=""
+          ARCH_ARGS=""
+          CSV_NAME_INPUT="${{ inputs.csv_name }}"
+          for ARCH in $ARCHS; do
+            if [ -n "$CSV_NAME_INPUT" ]; then
+              ARTIFACT_DIR="../artifacts/${CSV_NAME_INPUT}_${ARCH}"
+            else
+              ARTIFACT_DIR="../artifacts/parity-csv-${ARCH}"
+            fi
+            CSV=$(find "$ARTIFACT_DIR"/ -name "*.csv" ! -name "*_running_time*" ! -name "*_summary*" 2>/dev/null | head -1)
+            if [ -n "$CSV" ]; then
+              CSV_ARGS="$CSV_ARGS $CSV"
+              ARCH_ARGS="$ARCH_ARGS $ARCH"
+            fi
+          done
+
+          if [ -n "$CSV_ARGS" ]; then
+            ARGS="--csv $CSV_ARGS --arch $ARCH_ARGS"
+            ARGS="$ARGS --set1_name $SET1 --set2_name $SET2"
+            if [ -n "$SHA" ]; then
+              ARGS="$ARGS --sha $SHA"
+            fi
+            if [ -n "$PR_ID" ]; then
+              ARGS="$ARGS --pr_id $PR_ID"
+            fi
+            if [ -n "$CSV_NAME_INPUT" ]; then
+              ARGS="$ARGS --output ${CSV_NAME_INPUT}_dashboard.html"
+            else
+              DATE=$(TZ='America/Los_Angeles' date '+%Y%m%d')
+              ARGS="$ARGS --output ${DATE}_parity_dashboard.html"
+            fi
+            echo "Running: python3 generate_dashboard.py $ARGS"
+            python3 generate_dashboard.py $ARGS
+          fi
+
       - name: Upload summary artifact
         uses: actions/upload-artifact@v4
         with:
@@ -325,6 +370,7 @@ jobs:
           path: |
             pytorch-unit-test-scripts/*_summary.csv
             pytorch-unit-test-scripts/*_summary.md
+            pytorch-unit-test-scripts/*_dashboard.html
 
       - name: Add artifact links to summary
         env:
