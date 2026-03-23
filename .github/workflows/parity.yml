@@ -63,7 +63,7 @@ on:
         required: false
         type: string
       csv_name:
-        description: 'Custom prefix for output filenames and artifacts. Example: march_report. Default: YYYYMMDD_all_tests_status'
+        description: 'Custom prefix for output filenames and artifacts. Default: YYYYMMDD_all_tests_status'
         required: false
         type: string
 
