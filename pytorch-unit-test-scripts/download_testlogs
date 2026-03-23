@@ -337,21 +337,28 @@ def main():
         # find distributed test in periodic workflow with success status
         error_msg="Error: Periodic workflow not found in scanned workflow runs."
         #https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-repository
-        mi355_fallback_used = False
+        periodic_fallback_used = False
         try:
             periodic_wf = download_workflow_run(created=args.created, max_pages=args.max_pages, workflow=ROCmWorkflowNames["distributed"], sha=periodic_sha, ignore_status=args.ignore_status, status=status, error_msg=error_msg)
         except (IndexError, Exception):
             periodic_wf = None
-        if periodic_wf is None and arch == 'mi355':
-            fallback = "periodic-rocm-mi355"
-            print(f"Distributed not found in {ROCmWorkflowNames['distributed']}, falling back to {fallback}")
-            periodic_wf = download_workflow_run(created=args.created, max_pages=args.max_pages, workflow=fallback, sha=periodic_sha, ignore_status=args.ignore_status, status=status, error_msg=error_msg)
-            mi355_fallback_used = True
+        periodic_fallbacks = {
+            "mi355": ("periodic-rocm-mi355", "linux-noble-rocm-py3.12-mi355"),
+            "mi200": ("periodic-rocm-mi200", "linux-jammy-rocm-py3.10"),
+        }
+        if periodic_wf is None and arch in periodic_fallbacks:
+            fallback_wf, fallback_prefix = periodic_fallbacks[arch]
+            print(f"Distributed not found in {ROCmWorkflowNames['distributed']}, falling back to {fallback_wf}")
+            periodic_wf = download_workflow_run(created=args.created, max_pages=args.max_pages, workflow=fallback_wf, sha=periodic_sha, ignore_status=args.ignore_status, status=status, error_msg=error_msg)
+            periodic_fallback_used = True
         if periodic_wf is None:
             raise Exception(error_msg)
         print(f"Using workflow with id:{periodic_wf['id']} as periodic_wf")
 
-        dist_job_prefix = "linux-noble-rocm-py3.12-mi355" if mi355_fallback_used else rocm_job_prefix['distributed']
+        if periodic_fallback_used and arch in periodic_fallbacks:
+            dist_job_prefix = periodic_fallbacks[arch][1]
+        else:
+            dist_job_prefix = rocm_job_prefix['distributed']
 
         folder_list = create_test_folder(periodic_wf)
 
