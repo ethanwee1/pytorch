@@ -195,7 +195,7 @@ jobs:
 
           if [ -n "$PREV_RUN" ]; then
             echo "Downloading from previous run $PREV_RUN..."
-            PATTERN="${{ needs.setup-matrix.outputs.prefix }}-csv-${{ matrix.arch }}"
+            PATTERN="${{ needs.setup-matrix.outputs.prefix }}-results-${{ matrix.arch }}"
             gh run download "$PREV_RUN" --pattern "$PATTERN" --dir prev_csv/ 2>/dev/null || true
 
             PREV=$(find prev_csv/ -name "*.csv" ! -name "*_running_time*" ! -name "*_summary*" 2>/dev/null | head -1)
@@ -249,7 +249,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ needs.setup-matrix.outputs.prefix }}-csv-${{ matrix.arch }}
+          name: ${{ needs.setup-matrix.outputs.prefix }}-results-${{ matrix.arch }}
           retention-days: 1
           path: |
             pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/*.csv
@@ -271,7 +271,7 @@ jobs:
       - name: Download all per-arch CSV artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: ${{ needs.setup-matrix.outputs.prefix }}-csv-*
+          pattern: ${{ needs.setup-matrix.outputs.prefix }}-results-*
           path: artifacts
 
       - name: Generate summary
@@ -288,7 +288,7 @@ jobs:
           CSV_ARGS=""
           ARCH_ARGS=""
           for ARCH in $ARCHS; do
-            ARTIFACT_DIR="../artifacts/${PREFIX}-csv-${ARCH}"
+            ARTIFACT_DIR="../artifacts/${PREFIX}-results-${ARCH}"
             CSV=$(find "$ARTIFACT_DIR"/ -name "*.csv" ! -name "*_running_time*" ! -name "*_summary*" 2>/dev/null | head -1)
             if [ -z "$CSV" ]; then
               echo "WARNING: No CSV found for $ARCH, skipping"
@@ -341,7 +341,7 @@ jobs:
           CSV_ARGS=""
           ARCH_ARGS=""
           for ARCH in $ARCHS; do
-            ARTIFACT_DIR="../artifacts/${PREFIX}-csv-${ARCH}"
+            ARTIFACT_DIR="../artifacts/${PREFIX}-results-${ARCH}"
             CSV=$(find "$ARTIFACT_DIR"/ -name "*.csv" ! -name "*_running_time*" ! -name "*_summary*" 2>/dev/null | head -1)
             if [ -n "$CSV" ]; then
               CSV_ARGS="$CSV_ARGS $CSV"
