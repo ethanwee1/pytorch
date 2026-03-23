@@ -122,6 +122,9 @@ def get_jobs_with_sync_tag(
         and "rocm" in job["with"]["build-environment"]
     ):
         del job["with"]["build-environment"]
+    # and ['name'], since ROCm jobs append a GPU-specific suffix to the job name
+    if "name" in job and "rocm" in job.get("name", ""):
+        del job["name"]
 
     # normalize needs: remove helper job-filter so comparisons ignore it
     needs = job.get("needs")
