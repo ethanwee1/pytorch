@@ -255,6 +255,7 @@ jobs:
             pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/*.csv
             pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/*.log
             pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/*.txt
+            pytorch-unit-test-scripts/prev_csv/*.csv
 
   generate-summary:
     needs: [setup-matrix, generate-parity]
@@ -340,12 +341,15 @@ jobs:
           ARCHS=$(echo "$ARCHS" | tr ',[:space:]' ' ')
           CSV_ARGS=""
           ARCH_ARGS=""
+          PREV_CSV_ARGS=""
           for ARCH in $ARCHS; do
             ARTIFACT_DIR="../artifacts/${PREFIX}-results-${ARCH}"
-            CSV=$(find "$ARTIFACT_DIR"/ -name "*.csv" ! -name "*_running_time*" ! -name "*_summary*" 2>/dev/null | head -1)
+            CSV=$(find "$ARTIFACT_DIR"/ -name "*.csv" ! -name "*_running_time*" ! -name "*_summary*" -not -path "*/prev_csv/*" 2>/dev/null | head -1)
             if [ -n "$CSV" ]; then
               CSV_ARGS="$CSV_ARGS $CSV"
               ARCH_ARGS="$ARCH_ARGS $ARCH"
+              PREV=$(find "$ARTIFACT_DIR"/prev_csv/ -name "*.csv" 2>/dev/null | head -1)
+              PREV_CSV_ARGS="$PREV_CSV_ARGS ${PREV:-}"
             fi
           done
 
@@ -358,6 +362,18 @@ jobs:
             if [ -n "$PR_ID" ]; then
               ARGS="$ARGS --pr_id $PR_ID"
             fi
+
+            HAS_PREV=false
+            for p in $PREV_CSV_ARGS; do
+              if [ -n "$p" ] && [ -f "$p" ]; then
+                HAS_PREV=true
+                break
+              fi
+            done
+            if [ "$HAS_PREV" = true ]; then
+              ARGS="$ARGS --prev_csv $PREV_CSV_ARGS"
+            fi
+
             ARGS="$ARGS --output ${PREFIX}_dashboard.html"
             echo "Running: python3 generate_dashboard.py $ARGS"
             python3 generate_dashboard.py $ARGS

@@ -24,6 +24,10 @@ def parse_args():
     parser.add_argument('--pr_id', type=str, default='', help='Pull request ID')
     parser.add_argument('--set1_name', type=str, default='rocm')
     parser.add_argument('--set2_name', type=str, default='cuda')
+    parser.add_argument(
+        '--prev_csv', nargs='*', default=[],
+        help='Previous week CSV file(s) (one per architecture, same order as --arch)'
+    )
     parser.add_argument('--output', type=str, default='parity_dashboard.html')
     return parser.parse_args()
 
@@ -131,9 +135,10 @@ def get_failed_tests(rows, arch, s1_col, s2_col, s1_name, s2_name):
     return failed
 
 
-def build_html(args, all_data):
+def build_html(args, all_data, prev_data=None):
     arch_stats = {}
     arch_skip_reasons = {}
+    arch_prev_skip_reasons = {}
     all_failed = []
     all_tests_json = []
 
@@ -147,6 +152,12 @@ def build_html(args, all_data):
         arch_stats[arch] = compute_stats(rows, s1_col, s2_col, s1_time, s2_time)
         arch_skip_reasons[arch] = get_skip_reason_counts(rows, s1_col, s2_col)
         all_failed.extend(get_failed_tests(rows, arch, s1_col, s2_col, args.set1_name, args.set2_name))
+
+        if prev_data and arch in prev_data:
+            pdata = prev_data[arch]
+            arch_prev_skip_reasons[arch] = get_skip_reason_counts(
+                pdata['rows'], pdata['s1_col'], pdata['s2_col']
+            )
 
         for r in rows:
             s1 = r[s1_col].strip()
@@ -179,6 +190,12 @@ def build_html(args, all_data):
         for wf, counts in wf_counts.items():
             skip_reasons_json[arch][wf] = dict(counts.most_common())
 
+    prev_skip_reasons_json = {}
+    for arch, wf_counts in arch_prev_skip_reasons.items():
+        prev_skip_reasons_json[arch] = {}
+        for wf, counts in wf_counts.items():
+            prev_skip_reasons_json[arch][wf] = dict(counts.most_common())
+
     return HTML_TEMPLATE.replace(
         '/*DATA_PLACEHOLDER*/',
         f"""
@@ -189,6 +206,7 @@ def build_html(args, all_data):
         const SET2 = {json.dumps(args.set2_name)};
         const STATS = {json.dumps(arch_stats)};
         const SKIP_REASONS = {json.dumps(skip_reasons_json)};
+        const PREV_SKIP_REASONS = {json.dumps(prev_skip_reasons_json)};
         const FAILED = {json.dumps(all_failed)};
         const WORKFLOWS = {json.dumps(WORKFLOWS)};
         const WF_DISPLAY = {json.dumps(WORKFLOW_DISPLAY)};
@@ -266,6 +284,10 @@ tr:hover td { background: rgba(88, 166, 255, 0.05); }
 .skip-table th:last-child, .skip-table td:last-child { text-align: right; }
 .reason-bar { display: inline-block; height: 8px; background: var(--accent); border-radius: 4px;
   margin-right: 8px; vertical-align: middle; min-width: 2px; }
+
+.delta-up { color: var(--red); font-size: 11px; margin-left: 4px; }
+.delta-down { color: var(--green); font-size: 11px; margin-left: 4px; }
+.delta-same { color: var(--text-dim); font-size: 11px; margin-left: 4px; }
 
 .search { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
 .search input, .search select { background: var(--surface); border: 1px solid var(--border);
@@ -363,23 +385,48 @@ function renderSummary() {
 // Skip reasons panel
 function renderSkipReasons() {
   const el = document.getElementById('panel-skip-reasons');
+  const hasPrev = Object.keys(PREV_SKIP_REASONS).length > 0;
   let h = '<div class="arch-tabs" id="skip-arch-tabs">';
   ARCHS.forEach((a, i) => h += `<button class="arch-tab ${i===0?'active':''}" data-arch="${a}">${a.toUpperCase()}</button>`);
   h += '</div>';
   ARCHS.forEach((a, i) => {
     const archData = SKIP_REASONS[a] || {};
+    const prevArchData = PREV_SKIP_REASONS[a] || {};
     h += `<div class="arch-panel" data-arch="${a}" style="${i>0?'display:none':''}">`;
     WORKFLOWS.forEach(wf => {
       const counts = archData[wf];
       if (!counts || Object.keys(counts).length === 0) return;
-      const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-      const max = sorted[0][1];
+      const prevCounts = prevArchData[wf] || {};
+      const allReasons = new Set([...Object.keys(counts), ...Object.keys(prevCounts)]);
+      const sorted = [...allReasons].map(r => [r, counts[r] || 0, prevCounts[r] || 0]).sort((a, b) => b[1] - a[1]);
+      const max = Math.max(...sorted.map(x => x[1]), 1);
       const total = sorted.reduce((s, [, v]) => s + v, 0);
-      h += `<h3 style="margin: 16px 0 8px; color: var(--accent)">${WF_DISPLAY[wf]} <span style="color:var(--text-dim);font-weight:400">(${fmt(total)} total)</span></h3>`;
-      h += '<div class="table-wrap" style="max-height:400px"><table class="skip-table"><thead><tr><th>Skip Reason</th><th>Count</th></tr></thead><tbody>';
-      sorted.forEach(([reason, count]) => {
+      const prevTotal = sorted.reduce((s, [,, v]) => s + v, 0);
+      let totalDelta = '';
+      if (hasPrev) {
+        const d = total - prevTotal;
+        if (d > 0) totalDelta = `<span class="delta-up">+${fmt(d)}</span>`;
+        else if (d < 0) totalDelta = `<span class="delta-down">${fmt(d)}</span>`;
+        else totalDelta = `<span class="delta-same">+0</span>`;
+      }
+      h += `<h3 style="margin: 16px 0 8px; color: var(--accent)">${WF_DISPLAY[wf]} <span style="color:var(--text-dim);font-weight:400">(${fmt(total)} total${totalDelta ? ' ' + totalDelta : ''})</span></h3>`;
+      h += '<div class="table-wrap" style="max-height:400px"><table class="skip-table"><thead><tr><th>Skip Reason</th>';
+      if (hasPrev) h += '<th>Last Week</th>';
+      h += '<th>This Week</th>';
+      if (hasPrev) h += '<th>Delta</th>';
+      h += '</tr></thead><tbody>';
+      sorted.forEach(([reason, count, prev]) => {
         const w = Math.max(2, (count / max) * 120);
-        h += `<tr><td><span class="reason-bar" style="width:${w}px"></span>${esc(reason)}</td><td>${fmt(count)}</td></tr>`;
+        h += `<tr><td><span class="reason-bar" style="width:${w}px"></span>${esc(reason)}</td>`;
+        if (hasPrev) h += `<td>${fmt(prev)}</td>`;
+        h += `<td>${fmt(count)}</td>`;
+        if (hasPrev) {
+          const d = count - prev;
+          if (d > 0) h += `<td class="delta-up">+${fmt(d)}</td>`;
+          else if (d < 0) h += `<td class="delta-down">${fmt(d)}</td>`;
+          else h += `<td class="delta-same">-</td>`;
+        }
+        h += '</tr>';
       });
       h += '</tbody></table></div>';
     });
@@ -548,7 +595,24 @@ def main():
         s2_time = f'running_time_{args.set2_name}' if f'running_time_{args.set2_name}' in headers else 'running_time_set2'
         all_data[arch] = {'rows': rows, 's1_col': s1_col, 's2_col': s2_col, 's1_time': s1_time, 's2_time': s2_time}
 
-    html_content = build_html(args, all_data)
+    prev_data = {}
+    if args.prev_csv:
+        for csv_path, arch in zip(args.prev_csv, args.arch):
+            if not csv_path:
+                continue
+            try:
+                rows = load_csv(csv_path)
+                if not rows:
+                    continue
+                headers = set(rows[0].keys())
+                s1_col = f'status_{args.set1_name}' if f'status_{args.set1_name}' in headers else 'status_set1'
+                s2_col = f'status_{args.set2_name}' if f'status_{args.set2_name}' in headers else 'status_set2'
+                prev_data[arch] = {'rows': rows, 's1_col': s1_col, 's2_col': s2_col}
+                print(f'Loaded previous CSV for {arch}: {csv_path} ({len(rows)} rows)')
+            except Exception as e:
+                print(f'Warning: Could not load prev CSV {csv_path}: {e}')
+
+    html_content = build_html(args, all_data, prev_data if prev_data else None)
     output = args.output if args.output.endswith('.html') else args.output + '.html'
     with open(output, 'w') as f:
         f.write(html_content)
