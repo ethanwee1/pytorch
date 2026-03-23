@@ -214,7 +214,12 @@ jobs:
           ARGS="$ARGS --set1_name ${{ inputs.set1_name }}"
           ARGS="$ARGS --set2_name ${{ inputs.set2_name }}"
           ARGS="$ARGS --output_csv $FOLDER/${CSV_NAME}.csv"
-          ARGS="$ARGS --test_file_running_time_output_csv $FOLDER/${CSV_NAME}_running_time.csv"
+          if [ -n "${{ inputs.csv_name }}" ]; then
+            RT_NAME="${{ inputs.csv_name }}_running_time_${ARCH}"
+          else
+            RT_NAME="${DATE}_running_time_${ARCH}"
+          fi
+          ARGS="$ARGS --test_file_running_time_output_csv $FOLDER/${RT_NAME}.csv"
 
           if [ -n "${{ steps.prev.outputs.prev_csv }}" ]; then
             ARGS="$ARGS --prev_week_csv ../${{ steps.prev.outputs.prev_csv }}"
