@@ -393,6 +393,28 @@ function renderSkipReasons() {
     const archData = SKIP_REASONS[a] || {};
     const prevArchData = PREV_SKIP_REASONS[a] || {};
     h += `<div class="arch-panel" data-arch="${a}" style="${i>0?'display:none':''}">`;
+    if (hasPrev) {
+      const summaryParts = [];
+      WORKFLOWS.forEach(wf => {
+        const counts = archData[wf] || {};
+        const prevCounts = prevArchData[wf] || {};
+        if (Object.keys(counts).length === 0) return;
+        const allReasons = new Set([...Object.keys(counts), ...Object.keys(prevCounts)]);
+        const ups = [], downs = [];
+        allReasons.forEach(r => {
+          const d = (counts[r] || 0) - (prevCounts[r] || 0);
+          if (d > 0) ups.push(`${r} +${fmt(d)}`);
+          else if (d < 0) downs.push(`${r} ${fmt(d)}`);
+        });
+        const parts = [...ups, ...downs];
+        if (parts.length === 0) {
+          summaryParts.push(`<b>${WF_DISPLAY[wf]}:</b> All categories flat (no changes).`);
+        } else {
+          summaryParts.push(`<b>${WF_DISPLAY[wf]}:</b> ${parts.join(', ')}; everything else flat.`);
+        }
+      });
+      h += `<div class="card" style="margin-bottom:16px;font-size:13px;line-height:1.6;color:var(--text-dim)">${summaryParts.join(' ')}</div>`;
+    }
     WORKFLOWS.forEach(wf => {
       const counts = archData[wf];
       if (!counts || Object.keys(counts).length === 0) return;
@@ -405,22 +427,21 @@ function renderSkipReasons() {
       let totalDelta = '';
       if (hasPrev) {
         const d = total - prevTotal;
-        if (d > 0) totalDelta = `<span class="delta-up">+${fmt(d)}</span>`;
-        else if (d < 0) totalDelta = `<span class="delta-down">${fmt(d)}</span>`;
-        else totalDelta = `<span class="delta-same">+0</span>`;
+        if (d > 0) totalDelta = `<span class="delta-up"> +${fmt(d)}</span>`;
+        else if (d < 0) totalDelta = `<span class="delta-down"> ${fmt(d)}</span>`;
+        else totalDelta = `<span class="delta-same"> +0</span>`;
       }
-      h += `<h3 style="margin: 16px 0 8px; color: var(--accent)">${WF_DISPLAY[wf]} <span style="color:var(--text-dim);font-weight:400">(${fmt(total)} total${totalDelta ? ' ' + totalDelta : ''})</span></h3>`;
+      h += `<h3 style="margin: 16px 0 8px; color: var(--accent)">${WF_DISPLAY[wf]} <span style="color:var(--text-dim);font-weight:400">(${fmt(total)} total${totalDelta})</span></h3>`;
       h += '<div class="table-wrap" style="max-height:400px"><table class="skip-table"><thead><tr><th>Skip Reason</th>';
-      if (hasPrev) h += '<th>Last Week</th>';
       h += '<th>This Week</th>';
-      if (hasPrev) h += '<th>Delta</th>';
+      if (hasPrev) h += '<th>Last Week</th><th>Delta</th>';
       h += '</tr></thead><tbody>';
       sorted.forEach(([reason, count, prev]) => {
         const w = Math.max(2, (count / max) * 120);
         h += `<tr><td><span class="reason-bar" style="width:${w}px"></span>${esc(reason)}</td>`;
-        if (hasPrev) h += `<td>${fmt(prev)}</td>`;
         h += `<td>${fmt(count)}</td>`;
         if (hasPrev) {
+          h += `<td>${fmt(prev)}</td>`;
           const d = count - prev;
           if (d > 0) h += `<td class="delta-up">+${fmt(d)}</td>`;
           else if (d < 0) h += `<td class="delta-down">${fmt(d)}</td>`;
