@@ -223,7 +223,7 @@ def parse_args():
     parser.add_argument('--no_rocm', action='store_true')
     parser.add_argument('--no_cuda', action='store_true')
     parser.add_argument('--pr_id', type=int, help='The pull request ID')
-    parser.add_argument('--arch', type=str, choices=['mi200', 'mi300', 'mi355', 'navi31'], default='mi355', help='ROCm GPU architecture (mi200, mi300, mi355, or navi31, default: mi355)')
+    parser.add_argument('--arch', type=str, choices=['mi200', 'mi300', 'mi355', 'navi31', 'nightly'], default='mi355', help='ROCm GPU architecture (mi200, mi300, mi355, navi31, or nightly, default: mi355)')
     return parser.parse_args()
 
 # Rate-limit issues
@@ -238,8 +238,12 @@ def main():
 
     # Set ROCm workflow names based on architecture
     global ROCmWorkflowNames
-    arch = args.arch  # 'mi200', 'mi300', 'mi355', or 'navi31'
-    if arch == 'mi355':
+    arch = args.arch  # 'mi200', 'mi300', 'mi355', 'navi31', or 'nightly'
+    if arch == 'nightly':
+        ROCmWorkflowNames = {
+            "default": "rocm-nightly",
+        }
+    elif arch == 'mi355':
         ROCmWorkflowNames = {
             "default": "trunk",
             "distributed": "trunk",
@@ -262,6 +266,9 @@ def main():
     # MI200 uses older jammy/py3.10 config, MI300 uses noble/py3.12
     # Inductor jobs have a different naming format
     rocm_job_prefixes = {
+        "nightly": {
+            "default": "linux-noble-rocm-nightly-py3.12-gfx942",
+        },
         "mi200": {
             "default": "linux-jammy-rocm-py3.10",
             "distributed": "linux-jammy-rocm-py3.10",
@@ -285,6 +292,7 @@ def main():
     }
     # Architecture-specific shard counts
     rocm_shard_counts = {
+        "nightly": {"default": 6},
         "mi200": {"default": 6, "distributed": 3, "inductor": 2},
         "mi300": {"default": 6, "distributed": 3, "inductor": 2},
         "mi355": {"default": 6, "distributed": 3, "inductor": 2},
@@ -292,14 +300,14 @@ def main():
     }
     rocm_job_prefix = rocm_job_prefixes[arch]
     rocm_shards = rocm_shard_counts[arch]
-    rocm_artifact_substrings = ["rocm.gpu"] if arch == "mi355" else None
-    # navi31 only has the default rocm-navi31 workflow (no periodic/inductor workflows)
-    if arch == "navi31":
+    rocm_artifact_substrings = ["rocm.gpu"] if arch in ("mi355", "nightly") else None
+    # navi31 and nightly only have default tests (no distributed/inductor workflows)
+    if arch in ("navi31", "nightly"):
         if not args.exclude_distributed:
-            print("NOTE: navi31 has no periodic-rocm-navi31 workflow, auto-excluding distributed")
+            print(f"NOTE: {arch} has no distributed workflow, auto-excluding distributed")
             args.exclude_distributed = True
         if not args.exclude_inductor:
-            print("NOTE: navi31 has no inductor-rocm-navi31 workflow, auto-excluding inductor")
+            print(f"NOTE: {arch} has no inductor workflow, auto-excluding inductor")
             args.exclude_inductor = True
     print(f"Using ROCm architecture: {arch}")
     print(f"Using ROCm job prefixes: {rocm_job_prefix}")
