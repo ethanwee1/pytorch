@@ -5,25 +5,25 @@ on:
     inputs:
       # download_testlogs flags
       sha:
-        description: 'PyTorch commit SHA (leave empty for latest green)'
+        description: 'Commit SHA to pull test results for. Example: 67f1ccf46a966e75f37facd497a03f7d1bd72982. Leave empty for latest green on main.'
         required: false
         type: string
       pr_id:
-        description: 'Pull request ID (alternative to SHA)'
+        description: 'Pull request number (alternative to SHA, uses latest commit). Example: 176306'
         required: false
         type: string
       arch:
-        description: 'ROCm architectures (comma or space separated)'
+        description: 'ROCm architectures, comma or space separated. Options: mi355, mi300, mi200, nightly, navi31. Example: "nightly, mi355" or "mi300"'
         required: false
         default: 'mi355, mi300, mi200'
         type: string
       exclude_distributed:
-        description: 'Exclude distributed tests'
+        description: 'Exclude distributed tests (auto-excluded for nightly and navi31)'
         required: false
         default: false
         type: boolean
       exclude_inductor:
-        description: 'Exclude inductor tests'
+        description: 'Exclude inductor tests (auto-excluded for nightly and navi31)'
         required: false
         default: false
         type: boolean
@@ -33,37 +33,37 @@ on:
         default: false
         type: boolean
       include_logs:
-        description: 'Download and include CI log files (.txt) in artifact'
+        description: 'Download and include CI log files (.txt) in artifact zip'
         required: false
         default: true
         type: boolean
       skip_rocm:
-        description: 'Skip ROCm download'
+        description: 'Skip downloading ROCm test results (generate CUDA-only report)'
         required: false
         default: false
         type: boolean
       skip_cuda:
-        description: 'Skip CUDA download'
+        description: 'Skip downloading CUDA test results (generate ROCm-only report)'
         required: false
         default: false
         type: boolean
       # summarize_xml_testreports flags
       set1_name:
-        description: 'Column header name for set1 (e.g. rocm, mi300)'
+        description: 'Label for ROCm columns in output CSV. Examples: rocm, nightly, mi300. Default: rocm'
         required: false
         default: 'rocm'
         type: string
       set2_name:
-        description: 'Column header name for set2 (e.g. cuda, mi355)'
+        description: 'Label for CUDA columns in output CSV. Examples: cuda, trunk. Default: cuda'
         required: false
         default: 'cuda'
         type: string
       filter:
-        description: 'Status filter (e.g. SKIPPED-NOT_SKIPPED-MISSED-NOT_MISSED)'
+        description: 'Filter output CSV by status. Example: SKIPPED-NOT_SKIPPED-MISSED-NOT_MISSED. Leave empty for all tests.'
         required: false
         type: string
       csv_name:
-        description: 'Custom CSV filename prefix (default: YYYYMMDD_all_tests_status_ARCH)'
+        description: 'Custom prefix for output filenames and artifacts. Example: march_report. Default: YYYYMMDD_all_tests_status'
         required: false
         type: string
 
