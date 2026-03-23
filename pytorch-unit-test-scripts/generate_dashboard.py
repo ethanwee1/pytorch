@@ -598,7 +598,7 @@ def main():
     prev_data = {}
     if args.prev_csv:
         for csv_path, arch in zip(args.prev_csv, args.arch):
-            if not csv_path:
+            if not csv_path or csv_path == 'NONE':
                 continue
             try:
                 rows = load_csv(csv_path)

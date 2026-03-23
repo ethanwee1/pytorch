@@ -172,6 +172,7 @@ jobs:
 
       - name: Download previous week CSV
         id: prev
+        working-directory: pytorch-unit-test-scripts
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -236,7 +237,7 @@ jobs:
           ARGS="$ARGS --test_file_running_time_output_csv $FOLDER/${RT_NAME}.csv"
 
           if [ -n "${{ steps.prev.outputs.prev_csv }}" ]; then
-            ARGS="$ARGS --prev_week_csv ../${{ steps.prev.outputs.prev_csv }}"
+            ARGS="$ARGS --prev_week_csv ${{ steps.prev.outputs.prev_csv }}"
           fi
 
           if [ -n "${{ inputs.filter }}" ]; then
@@ -349,9 +350,13 @@ jobs:
               CSV_ARGS="$CSV_ARGS $CSV"
               ARCH_ARGS="$ARCH_ARGS $ARCH"
               PREV=$(find "$ARTIFACT_DIR"/prev_csv/ -name "*.csv" 2>/dev/null | head -1)
-              PREV_CSV_ARGS="$PREV_CSV_ARGS ${PREV:-}"
+              PREV_CSV_ARGS="$PREV_CSV_ARGS ${PREV:-NONE}"
             fi
           done
+
+          echo "CSV_ARGS: $CSV_ARGS"
+          echo "ARCH_ARGS: $ARCH_ARGS"
+          echo "PREV_CSV_ARGS: $PREV_CSV_ARGS"
 
           if [ -n "$CSV_ARGS" ]; then
             ARGS="--csv $CSV_ARGS --arch $ARCH_ARGS"
@@ -365,7 +370,7 @@ jobs:
 
             HAS_PREV=false
             for p in $PREV_CSV_ARGS; do
-              if [ -n "$p" ] && [ -f "$p" ]; then
+              if [ "$p" != "NONE" ] && [ -f "$p" ]; then
                 HAS_PREV=true
                 break
               fi
