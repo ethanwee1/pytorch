@@ -72,6 +72,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       arch-matrix: ${{ steps.parse.outputs.matrix }}
+      prefix: ${{ steps.parse.outputs.prefix }}
     steps:
       - name: Parse arch input into matrix
         id: parse
@@ -81,6 +82,18 @@ jobs:
           JSON=$(echo "$ARCHS" | tr ' ' '\n' | sed '/^$/d' | sed 's/^/"/;s/$/"/' | paste -sd',' | sed 's/^/[/;s/$/]/')
           echo "matrix=$JSON" >> "$GITHUB_OUTPUT"
           echo "Architectures: $JSON"
+
+          if [ -n "${{ inputs.csv_name }}" ]; then
+            PREFIX="${{ inputs.csv_name }}"
+          elif [ -n "${{ inputs.sha }}" ]; then
+            PREFIX="${{ inputs.sha }}"
+          elif [ -n "${{ inputs.pr_id }}" ]; then
+            PREFIX="${{ inputs.pr_id }}"
+          else
+            PREFIX="parity"
+          fi
+          echo "prefix=$PREFIX" >> "$GITHUB_OUTPUT"
+          echo "Artifact prefix: $PREFIX"
 
   generate-parity:
     needs: setup-matrix
@@ -182,7 +195,7 @@ jobs:
 
           if [ -n "$PREV_RUN" ]; then
             echo "Downloading from previous run $PREV_RUN..."
-            PATTERN="${{ inputs.csv_name && format('{0}_{1}', inputs.csv_name, matrix.arch) || format('parity-csv-{0}', matrix.arch) }}"
+            PATTERN="${{ needs.setup-matrix.outputs.prefix }}-csv-${{ matrix.arch }}"
             gh run download "$PREV_RUN" --pattern "$PATTERN" --dir prev_csv/ 2>/dev/null || true
 
             PREV=$(find prev_csv/ -name "*.csv" ! -name "*_running_time*" ! -name "*_summary*" 2>/dev/null | head -1)
@@ -236,7 +249,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.csv_name && format('{0}_{1}', inputs.csv_name, matrix.arch) || format('parity-csv-{0}', matrix.arch) }}
+          name: ${{ needs.setup-matrix.outputs.prefix }}-csv-${{ matrix.arch }}
           retention-days: 1
           path: |
             pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/*.csv
@@ -258,7 +271,7 @@ jobs:
       - name: Download all per-arch CSV artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: ${{ inputs.csv_name && format('{0}_*', inputs.csv_name) || 'parity-csv-*' }}
+          pattern: ${{ needs.setup-matrix.outputs.prefix }}-csv-*
           path: artifacts
 
       - name: Generate summary
@@ -271,15 +284,11 @@ jobs:
           SET2="${{ inputs.set2_name }}"
 
           ARCHS=$(echo "$ARCHS" | tr ',[:space:]' ' ')
+          PREFIX="${{ needs.setup-matrix.outputs.prefix }}"
           CSV_ARGS=""
           ARCH_ARGS=""
-          CSV_NAME_INPUT="${{ inputs.csv_name }}"
           for ARCH in $ARCHS; do
-            if [ -n "$CSV_NAME_INPUT" ]; then
-              ARTIFACT_DIR="../artifacts/${CSV_NAME_INPUT}_${ARCH}"
-            else
-              ARTIFACT_DIR="../artifacts/parity-csv-${ARCH}"
-            fi
+            ARTIFACT_DIR="../artifacts/${PREFIX}-csv-${ARCH}"
             CSV=$(find "$ARTIFACT_DIR"/ -name "*.csv" ! -name "*_running_time*" ! -name "*_summary*" 2>/dev/null | head -1)
             if [ -z "$CSV" ]; then
               echo "WARNING: No CSV found for $ARCH, skipping"
@@ -310,12 +319,7 @@ jobs:
             ARGS="$ARGS --pr_id $PR_ID"
           fi
 
-          if [ -n "${{ inputs.csv_name }}" ]; then
-            OUTPUT="${{ inputs.csv_name }}_summary"
-          else
-            DATE=$(TZ='America/Los_Angeles' date '+%Y%m%d')
-            OUTPUT="${DATE}_parity_summary"
-          fi
+          OUTPUT="${PREFIX}_summary"
           ARGS="$ARGS --output $OUTPUT"
 
           echo "Running: python3 generate_summary.py $ARGS"
@@ -332,16 +336,12 @@ jobs:
           SET1="${{ inputs.set1_name }}"
           SET2="${{ inputs.set2_name }}"
 
+          PREFIX="${{ needs.setup-matrix.outputs.prefix }}"
           ARCHS=$(echo "$ARCHS" | tr ',[:space:]' ' ')
           CSV_ARGS=""
           ARCH_ARGS=""
-          CSV_NAME_INPUT="${{ inputs.csv_name }}"
           for ARCH in $ARCHS; do
-            if [ -n "$CSV_NAME_INPUT" ]; then
-              ARTIFACT_DIR="../artifacts/${CSV_NAME_INPUT}_${ARCH}"
-            else
-              ARTIFACT_DIR="../artifacts/parity-csv-${ARCH}"
-            fi
+            ARTIFACT_DIR="../artifacts/${PREFIX}-csv-${ARCH}"
             CSV=$(find "$ARTIFACT_DIR"/ -name "*.csv" ! -name "*_running_time*" ! -name "*_summary*" 2>/dev/null | head -1)
             if [ -n "$CSV" ]; then
               CSV_ARGS="$CSV_ARGS $CSV"
@@ -358,12 +358,7 @@ jobs:
             if [ -n "$PR_ID" ]; then
               ARGS="$ARGS --pr_id $PR_ID"
             fi
-            if [ -n "$CSV_NAME_INPUT" ]; then
-              ARGS="$ARGS --output ${CSV_NAME_INPUT}_dashboard.html"
-            else
-              DATE=$(TZ='America/Los_Angeles' date '+%Y%m%d')
-              ARGS="$ARGS --output ${DATE}_parity_dashboard.html"
-            fi
+            ARGS="$ARGS --output ${PREFIX}_dashboard.html"
             echo "Running: python3 generate_dashboard.py $ARGS"
             python3 generate_dashboard.py $ARGS
           fi
@@ -371,7 +366,7 @@ jobs:
       - name: Upload summary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.csv_name && format('{0}_summary', inputs.csv_name) || 'parity-summary' }}
+          name: ${{ needs.setup-matrix.outputs.prefix }}-summary
           retention-days: 1
           path: |
             pytorch-unit-test-scripts/*_summary.csv
@@ -380,7 +375,7 @@ jobs:
       - name: Upload dashboard artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.csv_name && format('{0}_dashboard', inputs.csv_name) || 'parity-dashboard' }}
+          name: ${{ needs.setup-matrix.outputs.prefix }}-dashboard
           retention-days: 1
           path: |
             pytorch-unit-test-scripts/*_dashboard.html
