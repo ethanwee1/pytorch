@@ -880,8 +880,9 @@ def main():
 
     col_rocm, col_cuda, col_msg = detect_columns(fieldnames)
 
-    if 'skip_reason' not in fieldnames:
-        fieldnames.append('skip_reason')
+    for col in ('skip_reason', 'assignee', 'comments'):
+        if col not in fieldnames:
+            fieldnames.append(col)
 
     classified_count = 0
     already_had_count = 0
@@ -932,6 +933,8 @@ def main():
             if existing_reason and existing_reason != reason:
                 overwritten_count += 1
             row['skip_reason'] = reason
+            row.setdefault('assignee', '')
+            row.setdefault('comments', 'auto-classified')
             classified_count += 1
             auto_reasons[reason] += 1
             tsv_entries.append({
