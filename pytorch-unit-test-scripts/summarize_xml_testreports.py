@@ -476,10 +476,13 @@ def summarize_xml_files(args):
                     item_values["assignee"] = prev_assignee
                     item_values["comments"] = prev_comments
                 else:
-                    # Always include these columns (empty) so user can fill in for next week
                     item_values["skip_reason"] = ""
                     item_values["assignee"] = ""
                     item_values["comments"] = ""
+        if not skip_reason_file_specified and not args.prev_week_csv:
+            item_values["skip_reason"] = ""
+            item_values["assignee"] = ""
+            item_values["comments"] = ""
         running_time1 = get_running_time(v[0])
         item_values[f"running_time_{set1_name}"] = running_time1
         running_time2 = get_running_time(v[1])

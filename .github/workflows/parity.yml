@@ -67,6 +67,11 @@ on:
         description: 'Custom prefix for output filenames and artifacts. Default: YYYYMMDD_all_tests_status'
         required: false
         type: string
+      include_inductor_periodic:
+        description: 'Download inductor-periodic benchmark artifacts (separate from parity CSV)'
+        required: false
+        default: false
+        type: boolean
       auto_classify:
         description: 'Auto-classify skip reasons for SKIPPED/MISSED tests in the output CSV'
         required: false
@@ -156,6 +161,9 @@ jobs:
           if [ "${{ inputs.skip_cuda }}" = "true" ]; then
             ARGS="$ARGS --no_cuda"
           fi
+          if [ "${{ inputs.include_inductor_periodic }}" = "true" ]; then
+            ARGS="$ARGS --include_inductor_periodic"
+          fi
 
           echo "Running: python3 ./download_testlogs $ARGS"
           python3 ./download_testlogs $ARGS 2>&1 | tee download_${{ matrix.arch }}.log
@@ -232,6 +240,8 @@ jobs:
             pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/*.csv
             pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/*.log
             pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/*.txt
+            pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/inductor_periodic_rocm_dir/
+            pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/inductor_periodic_cuda_dir/
 
   summarize:
     needs: [setup-matrix, generate-parity]

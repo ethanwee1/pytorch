@@ -224,6 +224,7 @@ def parse_args():
     parser.add_argument('--no_cuda', action='store_true')
     parser.add_argument('--pr_id', type=int, help='The pull request ID')
     parser.add_argument('--arch', type=str, choices=['mi200', 'mi300', 'mi355', 'navi31', 'nightly'], default='mi355', help='ROCm GPU architecture (mi200, mi300, mi355, navi31, or nightly, default: mi355)')
+    parser.add_argument('--include_inductor_periodic', action='store_true', help='Also download inductor-periodic benchmark artifacts (into a separate directory, not included in parity CSV)')
     return parser.parse_args()
 
 # Rate-limit issues
@@ -572,6 +573,74 @@ def main():
                 allowed_substrings=["nvidia.gpu"],
             )
             os.chdir("..")
+
+    # Download inductor-periodic benchmark artifacts (separate from parity CSV)
+    if args.include_inductor_periodic:
+        print("==============================================")
+        print(f"Finding inductor-periodic workflow by sha: {sha}")
+        print("==============================================")
+        error_msg = "Error: inductor-periodic workflow not found for this SHA. It may not have run on this commit."
+        try:
+            inductor_periodic_wf = download_workflow_run(
+                created=args.created, max_pages=args.max_pages,
+                workflow="inductor-periodic", sha=sha,
+                ignore_status=args.ignore_status, status=status,
+                error_msg=error_msg,
+            )
+        except (IndexError, Exception) as e:
+            print(f"WARNING: {e}")
+            inductor_periodic_wf = None
+
+        if inductor_periodic_wf:
+            print(f"Using workflow with id:{inductor_periodic_wf['id']} as inductor_periodic_wf")
+
+            # Reuse the existing output folder (from earlier downloads) instead of
+            # create_test_folder, which could create a different folder if the
+            # inductor-periodic workflow ran at a different time.
+            import glob
+            existing_folders = sorted(glob.glob("[0-9]*_[0-9a-f]*"), key=os.path.getmtime, reverse=True)
+            if existing_folders:
+                test_folder = existing_folders[0]
+            else:
+                folder_list = create_test_folder(inductor_periodic_wf)
+                test_folder = folder_list[0]
+
+            rocm_periodic_dir = os.path.join(test_folder, "inductor_periodic_rocm_dir")
+            cuda_periodic_dir = os.path.join(test_folder, "inductor_periodic_cuda_dir")
+            os.makedirs(rocm_periodic_dir, exist_ok=True)
+            os.makedirs(cuda_periodic_dir, exist_ok=True)
+
+            if not args.no_rocm:
+                print("Downloading inductor-periodic ROCm artifacts...")
+                download_artifacts(
+                    inductor_periodic_wf,
+                    ["test-reports-"],
+                    test_folder=rocm_periodic_dir,
+                    allowed_substrings=["rocm.gpu"],
+                )
+                os.chdir("..")
+
+            if not args.no_cuda:
+                print("Downloading inductor-periodic CUDA artifacts...")
+                cuda_periodic_job_ids = get_job_ids_by_prefix(inductor_periodic_wf, "linux.g5")
+                cuda_periodic_substrings = (
+                    [f"_{jid}" for jid in cuda_periodic_job_ids]
+                    if cuda_periodic_job_ids
+                    else ["nvidia.gpu"]
+                )
+                download_artifacts(
+                    inductor_periodic_wf,
+                    ["test-reports-"],
+                    test_folder=cuda_periodic_dir,
+                    allowed_substrings=cuda_periodic_substrings,
+                )
+                os.chdir("..")
+
+            print(f"Inductor-periodic artifacts saved to:")
+            print(f"  ROCm: {rocm_periodic_dir}")
+            print(f"  CUDA: {cuda_periodic_dir}")
+        else:
+            print("Skipping inductor-periodic download (workflow run not found)")
 
     return
 
