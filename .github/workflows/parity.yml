@@ -98,6 +98,7 @@ jobs:
           else
             PREFIX="parity"
           fi
+          PREFIX=$(echo "$PREFIX" | xargs)
           echo "prefix=$PREFIX" >> "$GITHUB_OUTPUT"
           echo "Artifact prefix: $PREFIX"
 
@@ -261,48 +262,48 @@ jobs:
           SET2="${{ inputs.set2_name }}"
 
           ARCHS=$(echo "$ARCHS" | tr ',[:space:]' ' ')
-          PREFIX="${{ needs.setup-matrix.outputs.prefix }}"
-          CSV_ARGS=""
-          ARCH_ARGS=""
+          PREFIX=$(echo "${{ needs.setup-matrix.outputs.prefix }}" | xargs)
+          CSV_ARGS=()
+          ARCH_ARGS=()
           for ARCH in $ARCHS; do
             ARTIFACT_DIR="../artifacts/${PREFIX}-results-${ARCH}"
-            CSV=$(find "$ARTIFACT_DIR"/ -name "*.csv" ! -name "*_running_time*" ! -name "*_summary*" 2>/dev/null | head -1)
+            CSV=$(find "$ARTIFACT_DIR"/ -maxdepth 2 -name "*.csv" ! -name "*_running_time*" ! -name "*_summary*" 2>/dev/null | head -1)
             if [ -z "$CSV" ]; then
               echo "WARNING: No CSV found for $ARCH, skipping"
               continue
             fi
             echo "Found CSV for $ARCH: $CSV"
-            CSV_ARGS="$CSV_ARGS $CSV"
-            ARCH_ARGS="$ARCH_ARGS $ARCH"
+            CSV_ARGS+=("$CSV")
+            ARCH_ARGS+=("$ARCH")
           done
 
-          if [ -z "$CSV_ARGS" ]; then
+          if [ ${#CSV_ARGS[@]} -eq 0 ]; then
             echo "::warning::No CSVs found for any architecture — some or all generate-parity jobs may have failed"
             echo "## ⚠ No CSVs produced" >> "$GITHUB_STEP_SUMMARY"
             echo "No parity CSVs were found. Check the generate-parity job logs for errors." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
-          ARGS="--csv $CSV_ARGS --arch $ARCH_ARGS"
-          ARGS="$ARGS --set1_name $SET1 --set2_name $SET2"
+          ARGS=(--csv "${CSV_ARGS[@]}" --arch "${ARCH_ARGS[@]}")
+          ARGS+=(--set1_name "$SET1" --set2_name "$SET2")
 
           if [ -n "$SHA" ]; then
-            ARGS="$ARGS --sha $SHA"
+            ARGS+=(--sha "$SHA")
           else
-            DETECTED_SHA=$(basename $(find ../artifacts/ -name "*.csv" | head -1) | grep -oP '[0-9a-f]{40}' || true)
+            DETECTED_SHA=$(basename "$(find ../artifacts/ -name '*.csv' | head -1)" | grep -oP '[0-9a-f]{40}' || true)
             if [ -n "$DETECTED_SHA" ]; then
-              ARGS="$ARGS --sha $DETECTED_SHA"
+              ARGS+=(--sha "$DETECTED_SHA")
             fi
           fi
           if [ -n "$PR_ID" ]; then
-            ARGS="$ARGS --pr_id $PR_ID"
+            ARGS+=(--pr_id "$PR_ID")
           fi
 
           OUTPUT="${PREFIX}_summary"
-          ARGS="$ARGS --output $OUTPUT"
+          ARGS+=(--output "$OUTPUT")
 
-          echo "Running: python3 generate_summary.py $ARGS"
-          python3 generate_summary.py $ARGS
+          echo "Running: python3 generate_summary.py ${ARGS[*]}"
+          python3 generate_summary.py "${ARGS[@]}"
 
           cat "${OUTPUT}.md" >> "$GITHUB_STEP_SUMMARY"
 
