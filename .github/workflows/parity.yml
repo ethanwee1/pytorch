@@ -67,6 +67,11 @@ on:
         description: 'Custom prefix for output filenames and artifacts. Default: YYYYMMDD_all_tests_status'
         required: false
         type: string
+      auto_classify:
+        description: 'Auto-classify skip reasons for SKIPPED/MISSED tests in the output CSV'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   setup-matrix:
@@ -203,6 +208,17 @@ jobs:
 
           echo "Running: python3 -u summarize_xml_testreports.py $ARGS"
           python3 -u summarize_xml_testreports.py $ARGS 2>&1 | tee "$FOLDER/xml_processing_${DATE}.log"
+
+      - name: Auto-classify skip reasons
+        if: ${{ inputs.auto_classify }}
+        working-directory: pytorch-unit-test-scripts
+        run: |
+          FOLDER="${{ steps.folder.outputs.folder }}"
+          CSV=$(find "$FOLDER"/ -name "*.csv" ! -name "*_running_time*" | head -1)
+          if [ -n "$CSV" ]; then
+            echo "Auto-classifying skip reasons in $CSV"
+            python3 auto_classify_skip_reasons.py -i "$CSV" -o "$CSV" --report 2>&1
+          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
