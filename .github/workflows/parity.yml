@@ -214,10 +214,12 @@ jobs:
         working-directory: pytorch-unit-test-scripts
         run: |
           FOLDER="${{ steps.folder.outputs.folder }}"
-          CSV=$(find "$FOLDER"/ -name "*.csv" ! -name "*_running_time*" | head -1)
+          CSV=$(find "$FOLDER" -maxdepth 1 -name "*.csv" ! -name "*_running_time*" | head -1)
           if [ -n "$CSV" ]; then
             echo "Auto-classifying skip reasons in $CSV"
             python3 auto_classify_skip_reasons.py -i "$CSV" -o "$CSV" --report 2>&1
+          else
+            echo "No parity CSV found in $FOLDER, skipping auto-classify"
           fi
 
       - name: Upload artifacts
