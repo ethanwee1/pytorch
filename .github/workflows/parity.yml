@@ -171,46 +171,6 @@ jobs:
           mv download_${{ matrix.arch }}.log "$FOLDER/" 2>/dev/null || true
           echo "Output folder: $FOLDER, SHA: $SHA, Date: $DATE"
 
-      - name: Download previous week CSV
-        id: prev
-        working-directory: pytorch-unit-test-scripts
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          ARCH="${{ matrix.arch }}"
-          mkdir -p prev_csv
-
-          # Try 1: Download from parity-input release (user-edited CSV)
-          echo "Checking parity-input release for previous CSV..."
-          gh release download parity-input -p "*.csv" -D prev_csv/ -R ${{ github.repository }} 2>/dev/null || true
-
-          PREV=$(find prev_csv/ -name "*.csv" 2>/dev/null | head -1)
-          if [ -n "$PREV" ]; then
-            echo "Found CSV from parity-input release: $PREV"
-            echo "prev_csv=$PREV" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # Try 2: Auto-detect last successful parity run
-          echo "No release found, auto-detecting last successful parity run..."
-          PREV_RUN=$(gh run list --workflow=parity.yml --status=success --limit=1 --json databaseId -q '.[0].databaseId' 2>/dev/null || true)
-
-          if [ -n "$PREV_RUN" ]; then
-            echo "Downloading from previous run $PREV_RUN..."
-            PATTERN="${{ needs.setup-matrix.outputs.prefix }}-results-${{ matrix.arch }}"
-            gh run download "$PREV_RUN" --pattern "$PATTERN" --dir prev_csv/ 2>/dev/null || true
-
-            PREV=$(find prev_csv/ -name "*.csv" ! -name "*_running_time*" ! -name "*_summary*" 2>/dev/null | head -1)
-            if [ -n "$PREV" ]; then
-              echo "Found CSV from previous run: $PREV"
-              echo "prev_csv=$PREV" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-
-          echo "No previous CSV found, skip_reason and existed_last_week will be empty"
-          echo "prev_csv=" >> "$GITHUB_OUTPUT"
-
       - name: Generate CSV
         working-directory: pytorch-unit-test-scripts
         run: |
@@ -237,10 +197,6 @@ jobs:
           fi
           ARGS="$ARGS --test_file_running_time_output_csv $FOLDER/${RT_NAME}.csv"
 
-          if [ -n "${{ steps.prev.outputs.prev_csv }}" ]; then
-            ARGS="$ARGS --prev_week_csv ${{ steps.prev.outputs.prev_csv }}"
-          fi
-
           if [ -n "${{ inputs.filter }}" ]; then
             ARGS="$ARGS --filter ${{ inputs.filter }}"
           fi
@@ -257,7 +213,6 @@ jobs:
             pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/*.csv
             pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/*.log
             pytorch-unit-test-scripts/${{ steps.folder.outputs.folder }}/*.txt
-            pytorch-unit-test-scripts/prev_csv/*.csv
 
   generate-summary:
     needs: [setup-matrix, generate-parity]
@@ -333,61 +288,6 @@ jobs:
 
           cat "${OUTPUT}.md" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Generate dashboard
-        working-directory: pytorch-unit-test-scripts
-        run: |
-          ARCHS="${{ inputs.arch }}"
-          SHA="${{ inputs.sha }}"
-          PR_ID="${{ inputs.pr_id }}"
-          SET1="${{ inputs.set1_name }}"
-          SET2="${{ inputs.set2_name }}"
-
-          PREFIX="${{ needs.setup-matrix.outputs.prefix }}"
-          ARCHS=$(echo "$ARCHS" | tr ',[:space:]' ' ')
-          CSV_ARGS=""
-          ARCH_ARGS=""
-          PREV_CSV_ARGS=""
-          for ARCH in $ARCHS; do
-            ARTIFACT_DIR="../artifacts/${PREFIX}-results-${ARCH}"
-            CSV=$(find "$ARTIFACT_DIR"/ -name "*.csv" ! -name "*_running_time*" ! -name "*_summary*" -not -path "*/prev_csv/*" 2>/dev/null | head -1)
-            if [ -n "$CSV" ]; then
-              CSV_ARGS="$CSV_ARGS $CSV"
-              ARCH_ARGS="$ARCH_ARGS $ARCH"
-              PREV=$(find "$ARTIFACT_DIR"/prev_csv/ -name "*.csv" 2>/dev/null | head -1)
-              PREV_CSV_ARGS="$PREV_CSV_ARGS ${PREV:-NONE}"
-            fi
-          done
-
-          echo "CSV_ARGS: $CSV_ARGS"
-          echo "ARCH_ARGS: $ARCH_ARGS"
-          echo "PREV_CSV_ARGS: $PREV_CSV_ARGS"
-
-          if [ -n "$CSV_ARGS" ]; then
-            ARGS="--csv $CSV_ARGS --arch $ARCH_ARGS"
-            ARGS="$ARGS --set1_name $SET1 --set2_name $SET2"
-            if [ -n "$SHA" ]; then
-              ARGS="$ARGS --sha $SHA"
-            fi
-            if [ -n "$PR_ID" ]; then
-              ARGS="$ARGS --pr_id $PR_ID"
-            fi
-
-            HAS_PREV=false
-            for p in $PREV_CSV_ARGS; do
-              if [ "$p" != "NONE" ] && [ -f "$p" ]; then
-                HAS_PREV=true
-                break
-              fi
-            done
-            if [ "$HAS_PREV" = true ]; then
-              ARGS="$ARGS --prev_csv $PREV_CSV_ARGS"
-            fi
-
-            ARGS="$ARGS --output ${PREFIX}_dashboard.html"
-            echo "Running: python3 generate_dashboard.py $ARGS"
-            python3 generate_dashboard.py $ARGS
-          fi
-
       - name: Upload summary artifact
         uses: actions/upload-artifact@v4
         with:
@@ -397,29 +297,12 @@ jobs:
             pytorch-unit-test-scripts/*_summary.csv
             pytorch-unit-test-scripts/*_summary.md
 
-      - name: Upload dashboard artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ needs.setup-matrix.outputs.prefix }}-dashboard
-          retention-days: 1
-          path: |
-            pytorch-unit-test-scripts/*_dashboard.html
-
       - name: Add artifact links to summary
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           ARTIFACTS_JSON=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts --paginate -q '.artifacts[] | {name, id}')
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts"
-
-          DASHBOARD_ID=$(echo "$ARTIFACTS_JSON" | jq -r 'select(.name | test("dashboard")) | .id')
-          if [ -n "$DASHBOARD_ID" ]; then
-            {
-              echo ""
-              echo "> **[Open Interactive Dashboard](${RUN_URL}/${DASHBOARD_ID})** — download and open in browser for filterable skip reasons, failed tests, and test explorer"
-              echo ""
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
 
           {
             echo ""

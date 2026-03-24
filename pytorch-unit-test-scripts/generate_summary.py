@@ -227,10 +227,6 @@ def build_rows(args, archs, arch_data):
         out.append(('__header__', f'Commit SHA: {args.sha}'))
     if args.pr_id:
         out.append(('__header__', f'PR ID: {args.pr_id}'))
-    out.append((
-        'GPU (MI)',
-        [a.replace('mi', '').replace('MI', '') for a in archs],
-    ))
 
     wf_keys = workflow_stats_keys(args.set1_name, args.set2_name)
     for wf in WORKFLOWS:
