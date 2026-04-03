@@ -347,3 +347,4 @@ case "$ID" in
     exit 1
     ;;
 esac
+# test rocm-nightly label
