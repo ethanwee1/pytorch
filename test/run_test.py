@@ -783,6 +783,10 @@ def run_test_retries(
             retries=0,  # no retries here, we do it ourselves, this is because it handles timeout exceptions well
         )
         ret_code = 0 if ret_code == 5 else ret_code
+        print_to_file(
+            f"DEBUG_EXIT_CODE: retry_shell returned {ret_code}, "
+            f"sc_command={sc_command!r}"
+        )
         if ret_code == 0 and not sc_command.startswith("--rs="):
             break  # Got to the end of the test suite successfully
         signal_name = f" ({SIGNALS_TO_NAMES_DICT[-ret_code]})" if ret_code < 0 else ""
