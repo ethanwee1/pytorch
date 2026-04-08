@@ -356,6 +356,26 @@ test_python_shard() {
     exit 1
   fi
 
+  # Diagnostic: detect nondeterministic exit code override from ROCm runtime
+  if [[ "$BUILD_ENVIRONMENT" == *rocm* ]]; then
+    echo "=== ROCm exit code diagnostic (20 trials) ==="
+    override_count=0
+    for i in $(seq 1 20); do
+      python -c "import torch; import sys; sys.exit(1)"
+      ec=$?
+      if [ "$ec" -ne 1 ]; then
+        echo "  trial $i: UNEXPECTED exit code $ec (expected 1)"
+        override_count=$((override_count + 1))
+      fi
+    done
+    if [ "$override_count" -gt 0 ]; then
+      echo "  WARNING: $override_count/20 trials had exit code overridden"
+    else
+      echo "  All 20 trials returned exit code 1 as expected"
+    fi
+    echo "=== end ROCm exit code diagnostic ==="
+  fi
+
   # Bare --include flag is not supported and quoting for lint ends up with flag not being interpreted correctly
   # shellcheck disable=SC2086
 
