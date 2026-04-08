@@ -361,7 +361,14 @@ test_python_shard() {
 
   # modify LD_LIBRARY_PATH to ensure it has the conda env.
   # This set of tests has been shown to be buggy without it for the split-build
+  set +e
   time python test/run_test.py --exclude-jit-executor --exclude-distributed-tests --exclude-quantization-tests $INCLUDE_CLAUSE --shard "$1" "$NUM_TEST_SHARDS" --verbose $PYTHON_TEST_EXTRA_OPTION --upload-artifacts-while-running
+  python_exit_code=$?
+  set -e
+  echo "DEBUG_SHELL: python test/run_test.py exited with code $python_exit_code" >&2
+  if [ "$python_exit_code" -ne 0 ]; then
+    exit "$python_exit_code"
+  fi
 
   assert_git_not_dirty
 }

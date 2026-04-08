@@ -1358,6 +1358,7 @@ def run_tests(argv=None):
         print(
             f"DEBUG_EXIT_CODE: pytest.main() returned {exit_code} "
             f"(type={type(exit_code).__name__}, int_value={int(exit_code)})",
+            file=sys.stderr,
             flush=True,
         )
         if TEST_SAVE_XML:
@@ -1366,6 +1367,7 @@ def run_tests(argv=None):
         final_code = 0 if exit_code == 5 else exit_code
         print(
             f"DEBUG_EXIT_CODE: calling sys.exit({final_code})",
+            file=sys.stderr,
             flush=True,
         )
         # exitcode of 5 means no tests were found, which happens since some test configs don't
