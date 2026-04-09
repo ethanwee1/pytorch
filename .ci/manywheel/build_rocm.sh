@@ -229,6 +229,21 @@ DEPS_AUX_DSTLIST+=(${RCCL_SHARE_FILES[@]/#/$RCCL_SHARE_DST/})
 
 echo "PYTORCH_ROCM_ARCH: ${PYTORCH_ROCM_ARCH}"
 
+# When ROCm is installed via TheRock pip wheels (_rocm_sdk_core, _rocm_sdk_devel),
+# libraries like librocm_smi64.so live in those sibling site-packages rather than
+# being bundled into torch/lib/. Add relative RPATHs so the dynamic linker can
+# find them at runtime, mirroring what build_cuda.sh does for NVIDIA pip packages:
+# https://github.com/pytorch/pytorch/blob/8f6565c3e7d39c660248b3c3897f5b5e8260e0a7/.ci/manywheel/build_cuda.sh#L262-L289
+if command -v rocm-sdk &>/dev/null; then
+    ROCM_RPATHS=(
+        '$ORIGIN/../../_rocm_sdk_core/lib'
+        '$ORIGIN/../../_rocm_sdk_devel/lib'
+    )
+    ROCM_RPATHS_STR=$(IFS=: ; echo "${ROCM_RPATHS[*]}")
+    export C_SO_RPATH=$ROCM_RPATHS_STR':$ORIGIN:$ORIGIN/lib'
+    export LIB_SO_RPATH=$ROCM_RPATHS_STR':$ORIGIN'
+fi
+
 SCRIPTPATH="$( cd "$(dirname "$0")" ; pwd -P )"
 if [[ -z "$BUILD_PYTHONLESS" ]]; then
     BUILD_SCRIPT=build_common.sh
