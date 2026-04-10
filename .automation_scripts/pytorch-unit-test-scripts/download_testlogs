@@ -1,0 +1,922 @@
+#!/usr/bin/env python3
+
+
+try:
+    import os
+    import json
+    import argparse
+    import requests
+    import re
+    import sys
+    from upload_stats_lib import unzip
+    from upload_test_stats import download_gha_artifacts, download_s3_artifacts
+except ImportError:
+    import subprocess
+    result = subprocess.run(["pip3", "install", "-U", "-r", "requirements.txt"], capture_output=True, text=True)
+    print(result.stdout)
+    print("Please rerun the download_testlogs script")
+    sys.exit(1)
+
+
+# Check if environment variables are set
+required_env_vars = ['GITHUB_TOKEN', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY']
+
+missing_vars = [var for var in required_env_vars if not os.getenv(var)]
+if missing_vars:
+    print(f"ERROR: Please set these environment variables: {', '.join(missing_vars)}")
+    sys.exit(1)
+
+
+# global variables
+error_msgs = []
+# Workflow names mapped to TEST_CONFIG values in PyTorch CI
+# These are set dynamically based on --arch argument in main()
+ROCmWorkflowNames = {}
+CUDAWorkflowNames = {"default": "trunk",
+                    # Same as default, so not used for now
+                    # "distributed": "pull",
+                    "inductor": "inductor"}
+
+authentication_headers = None
+
+def get_commit_hashes(pr_id, token):
+    owner = "pytorch"
+    repo = "pytorch"
+    commits_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_id}/commits"
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    page = 1
+    commits = []
+    while True:
+        response = requests.get(commits_url, headers=headers, params={'page': page})
+        if response.status_code == 200:
+            new_commits = response.json()
+            if not new_commits:
+                break
+            commits.extend(new_commits)
+            page += 1
+        else:
+            print(f"Failed to fetch commits: {response.status_code}")
+            break
+    return commits
+
+def get_latest_commit_sha(pr_id, token):
+    commits = get_commit_hashes(pr_id, token)
+    if commits:
+        return commits[-1]['sha']
+    else:
+        print("No commits found for the given pull request.")
+        sys.exit(1)
+
+def write_test_log_to_file(filename, test_key, jobs, sha):
+    js = [j for j in jobs if test_key in j['name']]
+    if len(js) > 0:
+        if len(js) > 1:
+            print(f"WARNING: Found multiple jobs with key: '{test_key}', selecting first one")
+            for j in js:
+                print(j['name'])
+        test_id = js[0]['id']
+        print(f"key: {test_key}, job Name: {js[0]['name']}, job ID: {test_id}, Downloading to {filename}")
+    else:
+        # Not being able to download logs is not a fatal error since we primarily depend on xml artifacts
+        # so log error and continue
+        error_msg = f"Error: TEST KEY: {test_key} DOES NOT EXIST IN JOBS.\nCheck url - https://hud.pytorch.org/hud/pytorch/pytorch/{sha}/1?per_page=50 - for job name"
+        print(error_msg)
+        error_msgs.append(error_msg)
+        return
+    response = requests.get( "https://ossci-raw-job-status.s3.amazonaws.com/log/" + str(test_id) )
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(response.text)
+
+def get_workflow_jobs(wf):
+    """Get all jobs for a workflow run."""
+    if wf is None:
+        raise Exception("wf is None!")
+    page_size = 100 #max allowed by Github API
+    response = requests.get( wf['jobs_url'], headers=authentication_headers, params={'per_page':page_size} )
+    response_json = response.json()
+    jobs = response_json["jobs"]
+
+    if response_json['total_count'] > page_size:
+        import math
+        for i in range(2, math.ceil(response_json['total_count']/page_size) + 1):
+            response = requests.get( wf['jobs_url'], headers=authentication_headers, params={'per_page':page_size, 'page':i} )
+            jobs += response.json()["jobs"]
+    return jobs
+
+def get_job_ids_by_prefix(wf, prefix):
+    """Get job IDs (as strings) for jobs whose name contains the given prefix."""
+    jobs = get_workflow_jobs(wf)
+    return [str(j['id']) for j in jobs if prefix in j['name']]
+
+def download_logs(wf, test_log_list, test_folder):
+    if wf is None: 
+        raise Exception("wf is None!")
+    
+    jobs = get_workflow_jobs(wf)
+
+    for test_log in test_log_list:
+        write_out_file = test_folder + "/" + test_log[0]
+        write_test_log_to_file(write_out_file, test_log[1], jobs, wf['head_sha'])
+
+def download_gha_artifacts_filtered(workflow_run_id, workflow_run_attempt, prefixes=[], allowed_substrings=None):
+    """Download GHA artifacts matching prefixes and optional substring filters.
+
+    GHA artifact names include run attempt info, e.g.:
+      test-reports-runattempt1-test-default-3-6-linux.rocm.gpu.gfx942.1_68425162477.zip
+    while S3 prefixes look like:
+      test-reports-test-default-3-6
+    We strip the runattemptN- portion before matching prefixes.
+
+    When a shard is re-run, only the latest attempt's artifact exists for that
+    shard, while other shards keep their original attempt. We collect all
+    matching artifacts and prefer the highest run attempt per shard key.
+    """
+    from pathlib import Path
+    from collections import defaultdict
+    artifact_paths = []
+    response = requests.get(
+        f"https://api.github.com/repos/pytorch/pytorch/actions/runs/{workflow_run_id}/artifacts?per_page=100",
+        headers=authentication_headers,
+    )
+    artifacts = response.json().get("artifacts", [])
+    while "next" in response.links:
+        response = requests.get(response.links["next"]["url"], headers=authentication_headers)
+        artifacts.extend(response.json().get("artifacts", []))
+
+    # Group matching artifacts by shard key, keeping highest run attempt
+    # shard key = normalized name without runattemptN- and without runner/jobid suffix
+    best_per_shard = {}
+    for artifact in artifacts:
+        name = artifact["name"]
+        if not name.startswith("test-reports-"):
+            continue
+        if "rerun_disabled" in name:
+            continue
+        normalized = re.sub(r'runattempt\d+-', '', name)
+        if not any(normalized.startswith(pfx) for pfx in prefixes):
+            continue
+        if allowed_substrings and not any(sub in name for sub in allowed_substrings):
+            continue
+        # Extract run attempt number
+        attempt_match = re.search(r'runattempt(\d+)', name)
+        attempt_num = int(attempt_match.group(1)) if attempt_match else 0
+        # Use the shard portion as key (e.g., test-reports-test-default-3-6)
+        shard_key = re.sub(r'-[a-z]+\..*$', '', normalized)
+        if shard_key not in best_per_shard or attempt_num > best_per_shard[shard_key][0]:
+            best_per_shard[shard_key] = (attempt_num, name, artifact["archive_download_url"])
+
+    for shard_key, (attempt_num, name, url) in best_per_shard.items():
+        print(f"Downloading GHA artifact: {name}")
+        dl_response = requests.get(url, headers=authentication_headers)
+        if dl_response.status_code != 200:
+            print(f"  WARNING: Failed to download (HTTP {dl_response.status_code})")
+            continue
+        p = Path(name if name.endswith(".zip") else name + ".zip")
+        with open(p, "wb") as f:
+            f.write(dl_response.content)
+        artifact_paths.append(p)
+
+    return artifact_paths
+
+def _shorten_unzipped_dirs():
+    """Rename unzipped-* directories to short names for Windows MAX_PATH compatibility.
+
+    Converts names like:
+      unzipped-test-reports-runattempt1-test-default-1-6-linux.rocm.gpu.gfx942.1_68613413431.zip
+    to:
+      test-default-1-6
+
+    Preserves the 'test-<config>' prefix so that summarize_xml_testreports.py
+    can still detect workflow type via substring matching.
+    """
+    from pathlib import Path
+    for d in sorted(Path(".").glob("unzipped-*")):
+        if not d.is_dir():
+            continue
+        m = re.search(r'(test-\w+-\d+-\d+)', d.name)
+        if m:
+            short_name = m.group(1)
+            if not Path(short_name).exists():
+                d.rename(short_name)
+                print(f"  Renamed {d.name} -> {short_name}")
+            else:
+                print(f"  WARNING: {short_name} already exists, keeping {d.name}")
+
+def download_xml_files(workflow_run_id, workflow_run_attempts, prefixes=[], allowed_substrings=None):
+    # Get from S3 artifacts
+    artifact_paths = []
+    for prefix in prefixes:
+        print("Trying to download S3 artifacts for workflow_run_attempt {} with prefix {}".format(workflow_run_attempts, prefix))
+        artifact_paths += download_s3_artifacts(
+            prefix,
+            workflow_run_id,
+            workflow_run_attempts,
+            allowed_substrings=allowed_substrings,
+        )
+
+    # Filter out rerun_disabled_tests artifacts (same prefix, different job)
+    before = len(artifact_paths)
+    artifact_paths = [p for p in artifact_paths if "rerun_disabled" not in p.name]
+    if before != len(artifact_paths):
+        print(f"  Filtered out {before - len(artifact_paths)} rerun_disabled artifacts")
+
+    # Fall back to GHA artifacts if S3 returned nothing
+    if len(artifact_paths) == 0:
+        print(f"No S3 artifacts found, trying GHA artifacts as fallback...")
+        artifact_paths = download_gha_artifacts_filtered(
+            workflow_run_id,
+            workflow_run_attempts,
+            prefixes=prefixes,
+            allowed_substrings=allowed_substrings,
+        )
+
+    if len(artifact_paths) == 0:
+        error_msg = f"WARNING: workflow run id: {workflow_run_id} - no artifacts found (S3 or GHA) for prefixes: {prefixes}"
+        print(error_msg)
+        error_msgs.append(error_msg)
+        return
+
+    for path in artifact_paths:
+            unzip(path)
+
+    _shorten_unzipped_dirs()
+
+    # Delete raw zip files now that contents are extracted
+    for path in artifact_paths:
+        try:
+            path.unlink()
+            print(f"  Deleted {path}")
+        except Exception:
+            pass
+
+def download_artifacts(wf, prefixes=[], test_folder=".", allowed_substrings=None):
+    os.chdir(test_folder)
+    #download the xml files
+    download_xml_files(
+        wf['id'],
+        wf.get('run_attempt',1),
+        prefixes,
+        allowed_substrings=allowed_substrings,
+    )
+    os.chdir("..")
+# for older runs, add 'created':'<=YYYY-MM-DD'. see https://docs.github.com/en/search-github/getting-started-with-searching-on-github/understanding-the-search-syntax#query-for-dates
+def download_workflow_run(created=None, max_pages=10, workflow=None, sha=None, ignore_status=False, status='success', error_msg='Error downloading workflow runs'):
+    if not workflow:
+        raise Exception("Workflow must be specified")
+    for page in range(max_pages):
+        params = {'per_page': 30, 'page': page}
+        if not ignore_status:
+            if status:
+                params['status'] = status
+        if created:
+            params['created'] = created
+        if sha:
+            params['head_sha'] = sha
+        else:
+            params['branch'] = "main"
+        print(".")
+
+        # Uncomment below for additional debug info
+        # print(f"authentication_headers: {authentication_headers}")
+        # print(f"params: {params}")
+        # print("https://api.github.com/repos/pytorch/pytorch/actions/workflows/{}.yml/runs".format(workflow))
+        response = requests.get("https://api.github.com/repos/pytorch/pytorch/actions/workflows/{}.yml/runs".format(workflow), headers=authentication_headers, params=params)
+        #print(response.json())
+        workflow_runs = None
+        try:
+            workflow_runs = response.json()['workflow_runs']
+            #print(workflow_runs)
+        except:
+            raise Exception(response.text)
+        return workflow_runs[0]
+        for wf in workflow_runs:
+            wf_name = wf["name"]
+            if not sha and (wf_name == workflow):
+                return wf
+            if sha and (wf_name == workflow) and (wf["head_sha"] == sha):
+                return wf
+
+    # Should not reach here ideally
+    raise Exception(error_msg)
+
+def create_test_folder(wf):
+    if wf is None:
+        raise Exception("wf is None!")
+        #return
+    test_folder = re.sub('T.*Z', '', wf['created_at'].replace(":", "").replace("-", "")) + "_" + wf['head_sha']
+    if not os.path.exists(test_folder):
+        os.mkdir(test_folder)
+
+    cuda_xml_folder = test_folder + "/cuda_xml"
+    if not os.path.exists(cuda_xml_folder):
+        os.mkdir(cuda_xml_folder)
+
+    rocm_xml_folder = test_folder + "/rocm_xml"
+    if not os.path.exists(rocm_xml_folder):
+        os.mkdir(rocm_xml_folder)
+    return [test_folder, cuda_xml_folder, rocm_xml_folder]
+
+_first_folder = None
+
+def get_or_create_test_folder(wf):
+    """Reuse the first folder created so all artifacts land in one place.
+
+    Different upstream workflows for the same SHA can have different created_at
+    dates (e.g. spanning midnight), which would cause create_test_folder to
+    create separate directories.  This wrapper ensures every call returns the
+    same folder that was established by the very first invocation.
+    """
+    global _first_folder
+    if _first_folder is not None:
+        test_folder = _first_folder
+        cuda_xml = test_folder + "/cuda_xml"
+        rocm_xml = test_folder + "/rocm_xml"
+        os.makedirs(cuda_xml, exist_ok=True)
+        os.makedirs(rocm_xml, exist_ok=True)
+        return [test_folder, cuda_xml, rocm_xml]
+    result = create_test_folder(wf)
+    _first_folder = result[0]
+    return result
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Download pytorch unit test logs')
+    parser.add_argument('--created', const=None, help='eg., \'<=YYYY-MM-DD\'. See https://docs.github.com/en/search-github/getting-started-with-searching-on-github/understanding-the-search-syntax#query-for-dates')
+    parser.add_argument('--max_pages', type=int, default=10, help='eg., 100')
+    parser.add_argument('--sha1', const=None, help='eg., 3dcd67a1b374faea01f4d2e17beb6bb1fff76d76')
+    parser.add_argument('--exclude_distributed', action='store_true')
+    parser.add_argument('--exclude_inductor', action='store_true')
+    parser.add_argument('--exclude_default', action='store_true')
+    parser.add_argument('--ignore_status', action='store_true')
+    parser.add_argument('--artifacts_only', action='store_true')
+    parser.add_argument('--no_rocm', action='store_true')
+    parser.add_argument('--no_cuda', action='store_true')
+    parser.add_argument('--pr_id', type=int, help='The pull request ID')
+    parser.add_argument('--arch', type=str, choices=['mi200', 'mi300', 'mi355', 'navi31', 'nightly'], default='mi355', help='ROCm GPU architecture (mi200, mi300, mi355, navi31, or nightly, default: mi355)')
+    parser.add_argument('--include_inductor_periodic', action='store_true', help='Also download inductor-periodic benchmark artifacts (into a separate directory, not included in parity CSV)')
+    parser.add_argument('--baseline_sha', type=str, help='Baseline commit SHA to compare against. Downloads the same ROCm workflows for this commit into baseline_xml/.')
+    return parser.parse_args()
+
+# Rate-limit issues
+# Authenticated users get 5000 requests/day
+# Check rate-limit without penalty: curl -H "Authorization: token $GITHUB_TOKEN" -I https://api.github.com/users/octocat
+
+def main():
+    global args
+    args = parse_args()
+    if args.max_pages < 1:
+        args.max_pages=1
+
+    # Set ROCm workflow names based on architecture
+    global ROCmWorkflowNames
+    arch = args.arch  # 'mi200', 'mi300', 'mi355', 'navi31', or 'nightly'
+    if arch == 'nightly':
+        ROCmWorkflowNames = {
+            "default": "rocm-nightly",
+            "distributed": "rocm-nightly",
+            "inductor": "rocm-nightly",
+        }
+    elif arch == 'mi355':
+        ROCmWorkflowNames = {
+            "default": "trunk",
+            "distributed": "trunk",
+            "inductor": "inductor-rocm-mi355"
+        }
+    elif arch == 'mi200':
+        ROCmWorkflowNames = {
+            "default": "trunk-rocm-sandbox",
+            "distributed": "trunk-rocm-sandbox",
+            "inductor": "trunk-rocm-sandbox"
+        }
+    else:
+        # MI300 and navi31 use dedicated ROCm workflows
+        ROCmWorkflowNames = {
+            "default": f"rocm-{arch}",
+            "distributed": f"periodic-rocm-{arch}",
+            "inductor": f"inductor-rocm-{arch}"
+        }
+    # Job key prefix for log downloads - architecture specific
+    # MI200 uses older jammy/py3.10 config, MI300 uses noble/py3.12
+    # Inductor jobs have a different naming format
+    rocm_job_prefixes = {
+        "nightly": {
+            "default": "linux-noble-rocm-nightly-py3.12-gfx942",
+            "distributed": "linux-noble-rocm-nightly-py3.12-gfx942",
+            "inductor": "linux-noble-rocm-nightly-py3.12-gfx942",
+        },
+        "mi200": {
+            "default": "linux-jammy-rocm-py3.10",
+            "distributed": "linux-jammy-rocm-py3.10",
+            "inductor": "linux-jammy-rocm-py3.10"
+        },
+        "mi300": {
+            "default": "linux-noble-rocm-py3.12-mi300",
+            "distributed": "linux-noble-rocm-py3.12-mi300",
+            "inductor": "linux-noble-rocm-py3.12-mi300"
+        },
+        "mi355": {
+            "default": "linux-jammy-rocm-py3.10-mi355",
+            "distributed": "linux-jammy-rocm-py3.10-mi355",
+            "inductor": "linux-noble-rocm-py3.12-mi355"
+        },
+        "navi31": {
+            "default": "linux-jammy-rocm-py3.10-navi31",
+            "distributed": "linux-jammy-rocm-py3.10-navi31",
+            "inductor": "linux-jammy-rocm-py3.10-navi31"
+        }
+    }
+    # Architecture-specific shard counts
+    rocm_shard_counts = {
+        "nightly": {"default": 6, "distributed": 3, "inductor": 2},
+        "mi200": {"default": 6, "distributed": 3, "inductor": 2},
+        "mi300": {"default": 6, "distributed": 3, "inductor": 2},
+        "mi355": {"default": 6, "distributed": 3, "inductor": 2},
+        "navi31": {"default": 2, "distributed": 3, "inductor": 2},
+    }
+    rocm_job_prefix = rocm_job_prefixes[arch]
+    rocm_shards = rocm_shard_counts[arch]
+    rocm_artifact_substrings = ["rocm.gpu"] if arch in ("mi355", "nightly") else None
+    # navi31 only has default tests (no distributed/inductor workflows)
+    if arch in ("navi31",):
+        if not args.exclude_distributed:
+            print(f"NOTE: {arch} has no distributed workflow, auto-excluding distributed")
+            args.exclude_distributed = True
+        if not args.exclude_inductor:
+            print(f"NOTE: {arch} has no inductor workflow, auto-excluding inductor")
+            args.exclude_inductor = True
+    if args.baseline_sha and not args.no_cuda:
+        print("NOTE: baseline_sha provided, auto-skipping CUDA (commit-vs-commit comparison)")
+        args.no_cuda = True
+
+    print(f"Using ROCm architecture: {arch}")
+    print(f"Using ROCm job prefixes: {rocm_job_prefix}")
+    print(f"Using ROCm shard counts: {rocm_shards}")
+
+    token = os.getenv('GITHUB_TOKEN', '...')
+    global authentication_headers
+    authentication_headers = {'Authorization': f'token {token}'}
+    if args.pr_id and args.sha1:
+        error_msg = "Error: Please provide either pr_id or sha!"
+        print(error_msg)
+        sys.exit(1)
+    if args.pr_id:
+        pr_id = args.pr_id
+        sha = get_latest_commit_sha(pr_id, token)        
+    else:
+        sha = args.sha1
+        pr_id = None
+    status = "success"
+    print(sha)
+
+    # When comparing two commits, prefix log filenames with short SHAs
+    if args.baseline_sha:
+        current_prefix = sha[:8] + "_"
+        baseline_prefix = args.baseline_sha[:8] + "_"
+    else:
+        current_prefix = ""
+        baseline_prefix = "baseline_"
+
+    if not args.exclude_distributed and not args.no_rocm:
+        periodic_sha = sha
+        print("==============================================")
+        print(f"Finding ROCm tests in periodic workflow by sha: {sha}")
+        print("==============================================")
+        # find distributed test in periodic workflow with success status
+        error_msg="Error: Periodic workflow not found in scanned workflow runs."
+        #https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-repository
+        periodic_fallback_used = False
+        try:
+            periodic_wf = download_workflow_run(created=args.created, max_pages=args.max_pages, workflow=ROCmWorkflowNames["distributed"], sha=periodic_sha, ignore_status=args.ignore_status, status=status, error_msg=error_msg)
+        except (IndexError, Exception):
+            periodic_wf = None
+        periodic_fallbacks = {
+            "mi355": ("periodic-rocm-mi355", "linux-noble-rocm-py3.12-mi355"),
+            "mi200": ("periodic-rocm-mi200", "linux-jammy-rocm-py3.10"),
+        }
+        if periodic_wf is None and arch in periodic_fallbacks:
+            fallback_wf, fallback_prefix = periodic_fallbacks[arch]
+            print(f"Distributed not found in {ROCmWorkflowNames['distributed']}, falling back to {fallback_wf}")
+            periodic_wf = download_workflow_run(created=args.created, max_pages=args.max_pages, workflow=fallback_wf, sha=periodic_sha, ignore_status=args.ignore_status, status=status, error_msg=error_msg)
+            periodic_fallback_used = True
+        if periodic_wf is None:
+            raise Exception(error_msg)
+        print(f"Using workflow with id:{periodic_wf['id']} as periodic_wf")
+
+        if periodic_fallback_used and arch in periodic_fallbacks:
+            dist_job_prefix = periodic_fallbacks[arch][1]
+        else:
+            dist_job_prefix = rocm_job_prefix['distributed']
+
+        folder_list = get_or_create_test_folder(periodic_wf)
+
+        # Download logs
+        # If the ROCm distributed logs aren't found you might want to check the HUD for the correct tags
+        # HUD link: https://hud.pytorch.org/hud/pytorch/pytorch/main/1?per_page=50&name_filter=rocm
+        # Make sure "Hide unstable jobs" is unselected, in case ROCm jobs are marked as unstable
+
+        if not args.artifacts_only:
+            dist_shards = rocm_shards["distributed"]
+            test_log_list_rocm_distributed = [
+                [f"{current_prefix}rocm_dist{i}.txt", f"{dist_job_prefix} / test (distributed, {i}, {dist_shards}"]
+                for i in range(1, dist_shards + 1)
+            ]
+            download_logs(periodic_wf, test_log_list_rocm_distributed, folder_list[0])
+
+        # Download artifacts
+        dist_shards = rocm_shards["distributed"]
+        test_artifacts_list_rocm_distributed = [
+            f"test-reports-test-distributed-{i}-{dist_shards}"
+            for i in range(1, dist_shards + 1)
+        ]
+        download_artifacts(
+            periodic_wf,
+            test_artifacts_list_rocm_distributed,
+            folder_list[2],
+            allowed_substrings=rocm_artifact_substrings,
+        )
+        os.chdir("..")
+
+    # Download ROCm default rocm_wf when ROCm is enabled
+    if not args.no_rocm and not args.exclude_default:
+        rocm_sha = sha
+        print("===========================================")
+        print(f"Finding ROCm tests in rocm workflow by sha: {rocm_sha}")
+        print("===========================================")
+        # find tests in rocm workflow with given sha and success status
+        #https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-repository
+        error_msg="Error: rocm workflow not found in scanned workflow runs. Try increasing max_pages."
+        default_fallback_used = False
+        try:
+            rocm_wf = download_workflow_run(created=args.created, max_pages=args.max_pages, workflow=ROCmWorkflowNames["default"], sha=rocm_sha, ignore_status=args.ignore_status, status=status, error_msg=error_msg)
+        except (IndexError, Exception):
+            rocm_wf = None
+        default_fallbacks = {
+            "mi355": ("rocm-mi355", "linux-noble-rocm-py3.12-mi355"),
+        }
+        if rocm_wf is None and arch in default_fallbacks:
+            fallback_wf, fallback_prefix = default_fallbacks[arch]
+            print(f"Default not found in {ROCmWorkflowNames['default']}, falling back to {fallback_wf}")
+            rocm_wf = download_workflow_run(created=args.created, max_pages=args.max_pages, workflow=fallback_wf, sha=rocm_sha, ignore_status=args.ignore_status, status=status, error_msg=error_msg)
+            default_fallback_used = True
+            rocm_job_prefix['default'] = fallback_prefix
+        if rocm_wf is None:
+            raise Exception(error_msg)
+        print(f"Using workflow with id:{rocm_wf['id']} as rocm_wf{' (fallback)' if default_fallback_used else ''}")
+
+        folder_list = get_or_create_test_folder(rocm_wf)
+
+        # Download logs
+        # If logs aren't found you might want to check the HUD for the correct tags
+        # HUD link: https://hud.pytorch.org/hud/pytorch/pytorch/main/1?per_page=50&name_filter=rocm
+        if not args.artifacts_only:
+            default_shards = rocm_shards["default"]
+            test_log_list_rocm_default = [
+              [f"{current_prefix}rocm{i}.txt", f"{rocm_job_prefix['default']} / test (default, {i}, {default_shards}"]
+              for i in range(1, default_shards + 1)
+            ]
+            download_logs(rocm_wf, test_log_list_rocm_default, folder_list[0])
+
+        # Download artifacts
+        default_shards = rocm_shards["default"]
+        test_artifacts_list_rocm_default = [
+          f"test-reports-test-default-{i}-{default_shards}"
+          for i in range(1, default_shards + 1)
+        ]
+        if not args.exclude_default:
+            download_artifacts(
+                rocm_wf,
+                test_artifacts_list_rocm_default,
+                test_folder=folder_list[2],
+                allowed_substrings=rocm_artifact_substrings,
+            )
+        os.chdir("..")
+
+    # add new inductor workflow downloading for ROCm
+    if not args.no_rocm and not args.exclude_inductor:
+        inductor_rocm_sha = sha
+        # find tests in inductor workflow with given sha and success status
+        #https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-repository
+        print("===========================================")
+        print(f"Finding ROCm tests in inductor-rocm workflow by sha: {inductor_rocm_sha}")
+        print("===========================================")
+        error_msg="Error: inductor workflow not found in scanned workflow runs. Try increasing max_pages."
+        inductor_wf_rocm = download_workflow_run(created=args.created, max_pages=args.max_pages, workflow=ROCmWorkflowNames["inductor"], sha=inductor_rocm_sha, ignore_status=args.ignore_status, status=status, error_msg=error_msg)
+        print(f"Using workflow with id:{inductor_wf_rocm['id']} as inductor_wf_rocm")
+
+        folder_list = get_or_create_test_folder(inductor_wf_rocm)
+
+        # Download logs
+        if not args.artifacts_only:
+          inductor_shards = rocm_shards["inductor"]
+          test_log_list_rocm_inductor = [
+            [f"{current_prefix}rocm_inductor{i}.txt", f"{rocm_job_prefix['inductor']} / test (inductor, {i}, {inductor_shards}"]
+            for i in range(1, inductor_shards + 1)
+          ]
+          download_logs(inductor_wf_rocm, test_log_list_rocm_inductor, folder_list[0])
+
+        #Download artifacts
+        inductor_shards = rocm_shards["inductor"]
+        test_artifacts_list_rocm_inductor = [
+          f"test-reports-test-inductor-{i}-{inductor_shards}"
+          for i in range(1, inductor_shards + 1)
+        ]
+        download_artifacts(
+            inductor_wf_rocm,
+            test_artifacts_list_rocm_inductor,
+            test_folder=folder_list[2],
+            allowed_substrings=rocm_artifact_substrings,
+        )
+        os.chdir("..")
+
+    if not args.no_cuda:
+        cuda_job_prefix = "linux-jammy-cuda13.0-py3.10-gcc11"
+        pull_sha = sha
+        print("==========================================")
+        print(f"Finding CUDA tests in pull workflow by sha: {pull_sha}")
+        print("==========================================")
+        # find tests in pull workflow with given sha and success status
+        #https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-repository
+        error_msg="Error: Pull workflow not found in scanned workflow runs. Try increasing max_pages."
+        pull_wf = download_workflow_run(created=args.created, max_pages=args.max_pages, workflow=CUDAWorkflowNames["default"], sha=pull_sha, ignore_status=args.ignore_status, status=status, error_msg=error_msg)
+        print(f"Using workflow with id:{pull_wf['id']} as pull_wf")
+
+        # Get job IDs for the target CUDA version to filter S3 artifacts
+        cuda_job_ids = get_job_ids_by_prefix(pull_wf, cuda_job_prefix)
+        cuda_artifact_substrings = [f"_{jid}" for jid in cuda_job_ids] if cuda_job_ids else ["nvidia.gpu"]
+        print(f"Using CUDA job prefix: {cuda_job_prefix}")
+        print(f"Found {len(cuda_job_ids)} CUDA jobs matching prefix")
+
+        folder_list = get_or_create_test_folder(pull_wf)
+
+        # Download logs
+        # If the cuda logs aren't found you might want to check the HUD for the correct tags
+        # Link to HUD: https://hud.pytorch.org/hud/pytorch/pytorch/main/1?per_page=50&name_filter=cuda
+        if not args.artifacts_only:
+            test_log_list_cuda_default = [
+              ["cuda1.txt", f"{cuda_job_prefix} / test (default, 1, 5"],
+              ["cuda2.txt", f"{cuda_job_prefix} / test (default, 2, 5"],
+              ["cuda3.txt", f"{cuda_job_prefix} / test (default, 3, 5"],
+              ["cuda4.txt", f"{cuda_job_prefix} / test (default, 4, 5"],
+              ["cuda5.txt", f"{cuda_job_prefix} / test (default, 5, 5"],
+            ]
+            test_log_list_cuda = test_log_list_cuda_default
+            if not args.exclude_distributed:
+                test_log_list_cuda_distributed = [
+                  ["cuda_dist1.txt", f"{cuda_job_prefix} / test (distributed, 1, 3"],
+                  ["cuda_dist2.txt", f"{cuda_job_prefix} / test (distributed, 2, 3"],
+                  ["cuda_dist3.txt", f"{cuda_job_prefix} / test (distributed, 3, 3"],
+                ]
+                test_log_list_cuda += test_log_list_cuda_distributed
+
+            download_logs(pull_wf, test_log_list_cuda, folder_list[0])
+
+        # Download artifacts
+        test_artifacts_list_cuda_default = [
+          "test-reports-test-default-1-5",
+          "test-reports-test-default-2-5",
+          "test-reports-test-default-3-5",
+          "test-reports-test-default-4-5",
+          "test-reports-test-default-5-5",
+        ]
+
+        test_artifacts_list_cuda = []
+        if not args.exclude_default:
+            test_artifacts_list_cuda += test_artifacts_list_cuda_default
+
+        if not args.exclude_distributed:
+            test_artifacts_list_cuda_distributed = [
+              "test-reports-test-distributed-1-3",
+              "test-reports-test-distributed-2-3",
+              "test-reports-test-distributed-3-3",
+            ]
+            test_artifacts_list_cuda += test_artifacts_list_cuda_distributed
+
+        if test_artifacts_list_cuda:
+            download_artifacts(
+                pull_wf,
+                test_artifacts_list_cuda,
+                test_folder=folder_list[1],
+                allowed_substrings=cuda_artifact_substrings,
+            )
+        os.chdir("..")
+
+        # add new inductor workflow downloading for CUDA
+        if not args.exclude_inductor:
+            inductor_sha = sha
+            print("==========================================")
+            print(f"Finding CUDA tests in inductor workflow by sha: {inductor_sha}")
+            print("==========================================")
+            # find tests in inductor workflow with given sha and success status
+            #https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-repository
+            error_msg="Error: inductor workflow not found in scanned workflow runs. Try increasing max_pages."
+            inductor_wf_cuda = download_workflow_run(created=args.created, max_pages=args.max_pages, workflow=CUDAWorkflowNames["inductor"], sha=inductor_sha, ignore_status=args.ignore_status, status=status, error_msg=error_msg)
+            print(f"Using workflow with id:{inductor_wf_cuda['id']} as inductor_wf_cuda")
+
+            folder_list = get_or_create_test_folder(inductor_wf_cuda)
+
+            # Download logs
+            if not args.artifacts_only:
+              test_log_list_cuda_inductor = [
+                ["cuda_inductor1.txt", "unit-test / inductor-test / test (inductor, 1, 2"],
+                ["cuda_inductor2.txt", "unit-test / inductor-test / test (inductor, 2, 2"],
+              ]
+              download_logs(inductor_wf_cuda, test_log_list_cuda_inductor, folder_list[0])
+
+            test_artifacts_list_cuda_inductor = [
+              "test-reports-test-inductor-1-2",
+              "test-reports-test-inductor-2-2"
+            ]
+            # Inductor workflow is separate, use nvidia.gpu filter (no duplicate CUDA versions)
+            download_artifacts(
+                inductor_wf_cuda,
+                test_artifacts_list_cuda_inductor,
+                test_folder=folder_list[1],
+                allowed_substrings=["nvidia.gpu"],
+            )
+            os.chdir("..")
+
+    # Download baseline commit artifacts for commit-vs-commit comparison
+    if args.baseline_sha and not args.no_rocm:
+        baseline_sha = args.baseline_sha
+        print("==============================================")
+        print(f"Downloading BASELINE ROCm artifacts for sha: {baseline_sha}")
+        print("==============================================")
+
+        import glob
+        existing_folders = sorted(glob.glob("[0-9]*_[0-9a-f]*"), key=os.path.getmtime, reverse=True)
+        if existing_folders:
+            test_folder = existing_folders[0]
+        else:
+            raise Exception("No output folder found from primary downloads")
+
+        baseline_xml_dir = os.path.join(test_folder, "baseline_xml")
+        os.makedirs(baseline_xml_dir, exist_ok=True)
+
+        if not args.exclude_default:
+            try:
+                baseline_default_wf = download_workflow_run(
+                    created=args.created, max_pages=args.max_pages,
+                    workflow=ROCmWorkflowNames["default"], sha=baseline_sha,
+                    ignore_status=args.ignore_status, status=status,
+                    error_msg=f"Baseline default workflow not found for {baseline_sha}",
+                )
+                print(f"Baseline default workflow id: {baseline_default_wf['id']}")
+                default_shards = rocm_shards["default"]
+
+                if not args.artifacts_only:
+                    baseline_default_logs = [
+                        [f"{baseline_prefix}rocm{i}.txt", f"{rocm_job_prefix['default']} / test (default, {i}, {default_shards}"]
+                        for i in range(1, default_shards + 1)
+                    ]
+                    download_logs(baseline_default_wf, baseline_default_logs, test_folder)
+
+                baseline_default_prefixes = [
+                    f"test-reports-test-default-{i}-{default_shards}"
+                    for i in range(1, default_shards + 1)
+                ]
+                download_artifacts(
+                    baseline_default_wf,
+                    baseline_default_prefixes,
+                    test_folder=baseline_xml_dir,
+                    allowed_substrings=rocm_artifact_substrings,
+                )
+                os.chdir("..")
+            except Exception as e:
+                print(f"WARNING: Could not download baseline default artifacts: {e}")
+
+        if not args.exclude_distributed and "distributed" in ROCmWorkflowNames:
+            try:
+                baseline_dist_wf = download_workflow_run(
+                    created=args.created, max_pages=args.max_pages,
+                    workflow=ROCmWorkflowNames["distributed"], sha=baseline_sha,
+                    ignore_status=args.ignore_status, status=status,
+                    error_msg=f"Baseline distributed workflow not found for {baseline_sha}",
+                )
+                print(f"Baseline distributed workflow id: {baseline_dist_wf['id']}")
+                dist_shards = rocm_shards["distributed"]
+
+                if not args.artifacts_only:
+                    baseline_dist_logs = [
+                        [f"{baseline_prefix}rocm_dist{i}.txt", f"{rocm_job_prefix['distributed']} / test (distributed, {i}, {dist_shards}"]
+                        for i in range(1, dist_shards + 1)
+                    ]
+                    download_logs(baseline_dist_wf, baseline_dist_logs, test_folder)
+
+                baseline_dist_prefixes = [
+                    f"test-reports-test-distributed-{i}-{dist_shards}"
+                    for i in range(1, dist_shards + 1)
+                ]
+                download_artifacts(
+                    baseline_dist_wf,
+                    baseline_dist_prefixes,
+                    test_folder=baseline_xml_dir,
+                    allowed_substrings=rocm_artifact_substrings,
+                )
+                os.chdir("..")
+            except Exception as e:
+                print(f"WARNING: Could not download baseline distributed artifacts: {e}")
+
+        if not args.exclude_inductor and "inductor" in ROCmWorkflowNames:
+            try:
+                baseline_inductor_wf = download_workflow_run(
+                    created=args.created, max_pages=args.max_pages,
+                    workflow=ROCmWorkflowNames["inductor"], sha=baseline_sha,
+                    ignore_status=args.ignore_status, status=status,
+                    error_msg=f"Baseline inductor workflow not found for {baseline_sha}",
+                )
+                print(f"Baseline inductor workflow id: {baseline_inductor_wf['id']}")
+                inductor_shards = rocm_shards["inductor"]
+
+                if not args.artifacts_only:
+                    baseline_inductor_logs = [
+                        [f"{baseline_prefix}rocm_inductor{i}.txt", f"{rocm_job_prefix['inductor']} / test (inductor, {i}, {inductor_shards}"]
+                        for i in range(1, inductor_shards + 1)
+                    ]
+                    download_logs(baseline_inductor_wf, baseline_inductor_logs, test_folder)
+
+                baseline_inductor_prefixes = [
+                    f"test-reports-test-inductor-{i}-{inductor_shards}"
+                    for i in range(1, inductor_shards + 1)
+                ]
+                download_artifacts(
+                    baseline_inductor_wf,
+                    baseline_inductor_prefixes,
+                    test_folder=baseline_xml_dir,
+                    allowed_substrings=rocm_artifact_substrings,
+                )
+                os.chdir("..")
+            except Exception as e:
+                print(f"WARNING: Could not download baseline inductor artifacts: {e}")
+
+        print(f"Baseline artifacts saved to: {baseline_xml_dir}")
+
+    # Download inductor-periodic benchmark artifacts (separate from parity CSV)
+    if args.include_inductor_periodic:
+        print("==============================================")
+        print(f"Finding inductor-periodic workflow by sha: {sha}")
+        print("==============================================")
+        error_msg = "Error: inductor-periodic workflow not found for this SHA. It may not have run on this commit."
+        try:
+            inductor_periodic_wf = download_workflow_run(
+                created=args.created, max_pages=args.max_pages,
+                workflow="inductor-periodic", sha=sha,
+                ignore_status=args.ignore_status, status=status,
+                error_msg=error_msg,
+            )
+        except (IndexError, Exception) as e:
+            print(f"WARNING: {e}")
+            inductor_periodic_wf = None
+
+        if inductor_periodic_wf:
+            print(f"Using workflow with id:{inductor_periodic_wf['id']} as inductor_periodic_wf")
+
+            folder_list = get_or_create_test_folder(inductor_periodic_wf)
+            test_folder = folder_list[0]
+
+            rocm_periodic_dir = os.path.join(test_folder, "inductor_periodic_rocm_dir")
+            cuda_periodic_dir = os.path.join(test_folder, "inductor_periodic_cuda_dir")
+            os.makedirs(rocm_periodic_dir, exist_ok=True)
+            os.makedirs(cuda_periodic_dir, exist_ok=True)
+
+            if not args.no_rocm:
+                print("Downloading inductor-periodic ROCm artifacts...")
+                download_artifacts(
+                    inductor_periodic_wf,
+                    ["test-reports-"],
+                    test_folder=rocm_periodic_dir,
+                    allowed_substrings=["rocm.gpu"],
+                )
+                os.chdir("..")
+
+            if not args.no_cuda:
+                print("Downloading inductor-periodic CUDA artifacts...")
+                cuda_periodic_job_ids = get_job_ids_by_prefix(inductor_periodic_wf, "linux.g5")
+                cuda_periodic_substrings = (
+                    [f"_{jid}" for jid in cuda_periodic_job_ids]
+                    if cuda_periodic_job_ids
+                    else ["nvidia.gpu"]
+                )
+                download_artifacts(
+                    inductor_periodic_wf,
+                    ["test-reports-"],
+                    test_folder=cuda_periodic_dir,
+                    allowed_substrings=cuda_periodic_substrings,
+                )
+                os.chdir("..")
+
+            print(f"Inductor-periodic artifacts saved to:")
+            print(f"  ROCm: {rocm_periodic_dir}")
+            print(f"  CUDA: {cuda_periodic_dir}")
+        else:
+            print("Skipping inductor-periodic download (workflow run not found)")
+
+    return
+
+if __name__ == "__main__":
+    main()
+    if error_msgs:
+        for msg in error_msgs:
+            print(msg)
+        exit(1)
