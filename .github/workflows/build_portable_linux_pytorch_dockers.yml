@@ -152,7 +152,7 @@ jobs:
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.docker-tag.outputs.tag }}"
           echo "Running test_binary_ufuncs (CPU) inside Docker image..."
           docker run --rm "${IMAGE}" \
-            python -m pytest test/test_binary_ufuncs.py -x -v --timeout=600 -k "cpu" 2>&1 | tail -30
+            bash -c "pip install pytest pytest-timeout && python -m pytest test/test_binary_ufuncs.py -x -v --timeout=600 -k cpu"
 
       - name: Push Docker image
         run: |
