@@ -80,6 +80,20 @@ COPY . /workspace/pytorch
 RUN chmod +x /tmp/install_rocm_deps.sh && \
     /tmp/install_rocm_deps.sh
 
+# Install the requested Python version if not already available.
+# Ubuntu 24.04 ships with 3.12; other versions come from deadsnakes PPA.
+RUN if ! command -v python${PYTHON_VERSION} >/dev/null 2>&1; then \
+        apt-get update && \
+        apt-get install -y --no-install-recommends software-properties-common && \
+        add-apt-repository -y ppa:deadsnakes/ppa && \
+        apt-get update && \
+        apt-get install -y --no-install-recommends \
+            python${PYTHON_VERSION} \
+            python${PYTHON_VERSION}-dev \
+            python${PYTHON_VERSION}-venv && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
+
 # Create Python virtual environment and upgrade pip/setuptools
 RUN python${PYTHON_VERSION} -m venv /opt/venv && \
     /opt/venv/bin/python -m pip install --upgrade pip && \
