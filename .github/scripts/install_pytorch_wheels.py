@@ -251,10 +251,11 @@ def main() -> int:
         print(f"rocm[devel]:    {rocm}")
         print(f"torchaudio:     (pip resolves)")
         print(f"torchvision:    (pip resolves)")
-        print(f"triton:         (pip resolves)")
+        print(f"triton:         (torch dependency)")
         print("=" * 50)
 
-        # Pass 1: install torch + rocm[devel] with exact versions
+        # Pass 1: install torch + rocm[devel] with exact versions.
+        # torch's declared dependency on triton pulls in the correct build.
         primary = [
             build_package_spec("torch", torch_version),
             build_package_spec("rocm[devel]", rocm),
@@ -263,10 +264,10 @@ def main() -> int:
         print(f"Installing: {', '.join(primary)}")
         run_pip_install(index_url, primary, break_sys)
 
-        # Pass 2: install companion packages without pinning — pip picks
+        # Pass 2: install torchaudio/torchvision without pinning — pip picks
         # versions compatible with the torch that's already installed
-        companions = ["torchaudio", "torchvision", "triton"]
-        print_banner("Pass 2: torchaudio, torchvision, triton (unpinned)")
+        companions = ["torchaudio", "torchvision"]
+        print_banner("Pass 2: torchaudio, torchvision (unpinned)")
         print(f"Installing: {', '.join(companions)}")
         run_pip_install(index_url, companions, break_sys)
     else:
