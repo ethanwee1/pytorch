@@ -98,11 +98,10 @@ def get_latest_package_version_for_rocm(
             print(msg, file=sys.stderr)
             sys.exit(1)
         return None
-    # Pick the latest version by comparing numeric parts (e.g. 0.26.0 > 0.25.0).
+    # Pick the latest version by comparing all numeric parts including the ROCm date.
     def _key(v: str) -> tuple[int, ...]:
         try:
-            part = v.split("+")[0]
-            return tuple(int(x) for x in re.split(r"[.\-]", part) if x.isdigit())
+            return tuple(int(x) for x in re.split(r"[.\-a+]", v) if x.isdigit())
         except (ValueError, AttributeError):
             return (0,)
     return max(matching, key=_key)
