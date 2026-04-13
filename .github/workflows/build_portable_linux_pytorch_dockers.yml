@@ -44,10 +44,14 @@ on:
       triton_version:
         description: Triton version (optional - uses torch dependency if not set)
         type: string
-      pytorch_branch:
-        description: "ROCm/pytorch branch to clone into the image (default: develop)"
+      pytorch_repo:
+        description: "GitHub repo to clone into the image (e.g. 'pytorch/pytorch' or 'ROCm/pytorch')"
         type: string
-        default: "develop"
+        default: "pytorch/pytorch"
+      pytorch_branch:
+        description: "Branch to clone (e.g. 'main' for nightly, 'release/2.11', 'release/2.10', 'release/2.9')"
+        type: string
+        default: "main"
       index_url:
         description: Base URL for PyTorch wheels index
         type: string
@@ -268,11 +272,11 @@ jobs:
       - name: Checkout workflow files
         uses: actions/checkout@v4
 
-      - name: Checkout ROCm/pytorch source
+      - name: Checkout PyTorch source
         uses: actions/checkout@v4
         with:
-          repository: ROCm/pytorch
-          ref: ${{ inputs.pytorch_branch || 'develop' }}
+          repository: ${{ inputs.pytorch_repo || 'pytorch/pytorch' }}
+          ref: ${{ inputs.pytorch_branch || 'main' }}
           path: pytorch-src
           fetch-depth: 1
 
@@ -339,7 +343,8 @@ jobs:
           echo "torchaudio_version=${{ inputs.torchaudio_version }}" >> $GITHUB_OUTPUT
           echo "torchvision_version=${{ inputs.torchvision_version }}" >> $GITHUB_OUTPUT
           echo "triton_version=${{ inputs.triton_version }}" >> $GITHUB_OUTPUT
-          echo "pytorch_branch=${{ inputs.pytorch_branch || 'develop' }}" >> $GITHUB_OUTPUT
+          echo "pytorch_repo=${{ inputs.pytorch_repo || 'pytorch/pytorch' }}" >> $GITHUB_OUTPUT
+          echo "pytorch_branch=${{ inputs.pytorch_branch || 'main' }}" >> $GITHUB_OUTPUT
 
           COMMIT="$(cd pytorch-src && git rev-parse --short=8 HEAD)"
           echo "pytorch_commit=${COMMIT}" >> $GITHUB_OUTPUT
@@ -385,6 +390,7 @@ jobs:
             --label "org.opencontainers.image.description=PyTorch with ROCm runtime" \
             --label "rocm.version=${{ steps.cfg.outputs.rocm_version }}" \
             --label "amdgpu.family=${{ steps.cfg.outputs.amdgpu_family }}" \
+            --label "pytorch.repo=${{ steps.cfg.outputs.pytorch_repo }}" \
             --label "pytorch.branch=${{ steps.cfg.outputs.pytorch_branch }}" \
             --label "pytorch.commit=${{ steps.cfg.outputs.pytorch_commit }}" \
             --build-arg "BASE_IMAGE=${{ steps.cfg.outputs.base_image }}" \
@@ -425,6 +431,7 @@ jobs:
           echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| Image | \`${IMAGE}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| PyTorch Repo | ${{ steps.cfg.outputs.pytorch_repo }} |" >> $GITHUB_STEP_SUMMARY
           echo "| PyTorch Branch | ${{ steps.cfg.outputs.pytorch_branch }} |" >> $GITHUB_STEP_SUMMARY
           echo "| PyTorch Commit | ${{ steps.cfg.outputs.pytorch_commit }} |" >> $GITHUB_STEP_SUMMARY
           echo "| AMDGPU Family | ${{ steps.cfg.outputs.amdgpu_family }} |" >> $GITHUB_STEP_SUMMARY
