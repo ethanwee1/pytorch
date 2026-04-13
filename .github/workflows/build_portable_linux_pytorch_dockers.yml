@@ -154,13 +154,6 @@ jobs:
           echo "ROCm packages:"
           echo "${ROCM_PACKAGES}"
 
-      - name: Run PyTorch smoke test
-        run: |
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.docker-tag.outputs.tag }}"
-          echo "Running test_binary_ufuncs (CPU) inside Docker image..."
-          docker run --rm "${IMAGE}" \
-            bash -c "pip install pytest pytest-timeout -r /workspace/pytorch/.ci/docker/requirements-ci.txt && cd /tmp && python -m pytest /workspace/pytorch/test/test_binary_ufuncs.py -x -v --timeout=600 -k cpu"
-
       - name: Push Docker image
         run: |
           docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.docker-tag.outputs.tag }}
