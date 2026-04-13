@@ -378,11 +378,7 @@ jobs:
             --build-arg "AMDGPU_FAMILY=${{ steps.cfg.outputs.amdgpu_family }}" \
             --build-arg "PYTHON_VERSION=${{ steps.cfg.outputs.python_version }}" \
             --build-arg "INDEX_URL=${{ steps.cfg.outputs.index_url }}" \
-            --build-arg "TORCH_VERSION=${{ steps.cfg.outputs.torch_version }}" \
             --build-arg "TORCH_VERSION_PREFIX=${{ steps.cfg.outputs.torch_prefix }}" \
-            --build-arg "TORCHAUDIO_VERSION=${{ steps.cfg.outputs.torchaudio_version }}" \
-            --build-arg "TORCHVISION_VERSION=${{ steps.cfg.outputs.torchvision_version }}" \
-            --build-arg "TRITON_VERSION=${{ steps.cfg.outputs.triton_version }}" \
             pytorch-src
 
           echo "Docker image built successfully: ${IMAGE}"
