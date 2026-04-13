@@ -2,11 +2,12 @@
 
 import argparse
 import csv
+import os
 import sys
 
 
-WORKFLOWS = ['default', 'distributed', 'inductor']
-WORKFLOW_DISPLAY = {
+TEST_CONFIGS = ['default', 'distributed', 'inductor']
+TEST_CONFIG_DISPLAY = {
     'default': 'TEST DEFAULT',
     'distributed': 'TEST DISTRIBUTED',
     'inductor': 'TEST INDUCTOR',
@@ -39,6 +40,10 @@ def parse_args():
         '--output', type=str, default='parity_summary',
         help='Output path prefix (produces .csv and .md)'
     )
+    parser.add_argument(
+        '--log-failures', nargs='*', default=[],
+        help='CSV file(s) from detect_log_failures.py to include in summary'
+    )
     return parser.parse_args()
 
 
@@ -60,7 +65,7 @@ def detect_columns(headers, set1_name, set2_name):
     return s1_status, s2_status, s1_time, s2_time
 
 
-def workflow_stats_keys(s1_name, s2_name, has_set2=True):
+def test_config_stats_keys(s1_name, s2_name, has_set2=True):
     s1 = s1_name.upper()
     s2 = s2_name.upper()
     if not has_set2:
@@ -85,13 +90,13 @@ def workflow_stats_keys(s1_name, s2_name, has_set2=True):
     ]
 
 
-def compute_workflow_stats(rows, s1_col, s2_col, s1_name, s2_name, has_set2=True):
+def compute_test_config_stats(rows, s1_col, s2_col, s1_name, s2_name, has_set2=True):
     s1 = s1_name.upper()
     s2 = s2_name.upper()
 
     if not has_set2:
         vals = {}
-        keys = workflow_stats_keys(s1_name, s2_name, has_set2=False)
+        keys = test_config_stats_keys(s1_name, s2_name, has_set2=False)
         vals[keys[0]] = sum(1 for r in rows if r[s1_col] == 'PASSED')
         vals[keys[1]] = sum(1 for r in rows if r[s1_col] == 'SKIPPED')
         vals[keys[2]] = sum(1 for r in rows if r[s1_col] == 'FAILED')
@@ -121,7 +126,7 @@ def compute_workflow_stats(rows, s1_col, s2_col, s1_name, s2_name, has_set2=True
     pct = (skip_miss / total_s2 * 100) if total_s2 else 0
 
     vals = {}
-    keys = workflow_stats_keys(s1_name, s2_name)
+    keys = test_config_stats_keys(s1_name, s2_name)
     vals[keys[0]] = s1_skip_not_s2
     vals[keys[1]] = s1_skip
     vals[keys[2]] = s2_skip
@@ -187,8 +192,8 @@ def compute_overall_stats(rows, s1_col, s2_col, s1_time_col, s2_time_col, s1_nam
 
     total_disagree = 0
     total_s2 = 0
-    for wf in WORKFLOWS:
-        wf_rows = [r for r in rows if r['work_flow_name'] == wf]
+    for wf in TEST_CONFIGS:
+        wf_rows = [r for r in rows if r['test_config'] == wf]
         s1_skip_not_s2 = sum(
             1 for r in wf_rows
             if r[s1_col] == 'SKIPPED' and r[s2_col] != 'SKIPPED'
@@ -236,18 +241,40 @@ def collect_failed_tests(arch_data, archs, s1_name, s2_name):
             s1 = r[s1_col].strip()
             s2 = r[s2_col].strip() if has_set2 else ''
             if s1 == 'FAILED' or s2 == 'FAILED':
+                shard = r.get(f'shard_{s1_name}', '') if s1 == 'FAILED' else r.get(f'shard_{s2_name}', '')
                 entry = {
                     'arch': arch,
                     'test_file': r.get('test_file', ''),
                     'test_class': r.get('test_class', ''),
                     'test_name': r.get('test_name', ''),
-                    'workflow': r.get('work_flow_name', ''),
+                    'test_config': r.get('test_config', ''),
+                    'shard': shard,
                     f'status_{s1_name}': s1,
                 }
                 if has_set2:
                     entry[f'status_{s2_name}'] = s2
                 failed.append(entry)
     return failed
+
+
+def load_log_failures(filepaths):
+    """Load log failure CSVs from detect_log_failures.py.
+
+    Extracts the architecture from the filename (e.g. log_failures_mi355.csv -> mi355).
+    """
+    entries = []
+    for fp in filepaths:
+        if not os.path.isfile(fp):
+            continue
+        basename = os.path.basename(fp)
+        arch = ''
+        if basename.startswith('log_failures_') and basename.endswith('.csv'):
+            arch = basename[len('log_failures_'):-len('.csv')]
+        with open(fp, newline='') as f:
+            for row in csv.DictReader(f):
+                row['arch'] = arch
+                entries.append(row)
+    return entries
 
 
 def fmt_val(v):
@@ -266,16 +293,16 @@ def build_rows(args, archs, arch_data):
     if args.pr_id:
         out.append(('__header__', f'PR ID: {args.pr_id}'))
 
-    wf_keys = workflow_stats_keys(args.set1_name, args.set2_name, has_set2=any_has_set2)
-    for wf in WORKFLOWS:
-        out.append(('__section__', WORKFLOW_DISPLAY[wf]))
+    wf_keys = test_config_stats_keys(args.set1_name, args.set2_name, has_set2=any_has_set2)
+    for wf in TEST_CONFIGS:
+        out.append(('__section__', TEST_CONFIG_DISPLAY[wf]))
         arch_stats = {}
         for arch in archs:
             d = arch_data[arch]
             s1_col, s2_col, _, _ = d['cols']
             has_set2 = d.get('has_set2', True)
-            wf_rows = [r for r in d['rows'] if r['work_flow_name'] == wf]
-            arch_stats[arch] = compute_workflow_stats(
+            wf_rows = [r for r in d['rows'] if r['test_config'] == wf]
+            arch_stats[arch] = compute_test_config_stats(
                 wf_rows, s1_col, s2_col, args.set1_name, args.set2_name,
                 has_set2=has_set2,
             )
@@ -298,7 +325,21 @@ def build_rows(args, archs, arch_data):
     return out
 
 
-def write_csv(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_name='set2', has_set2=True):
+def _parse_log_failure_names(lf):
+    """Extract test_class and test_name from a log failure's reason field.
+
+    Handles formats like 'TestClass::test_method' and
+    'TestClass::test_method | extra reason text'.
+    """
+    reason = lf.get('reason', '')
+    if '::' not in reason:
+        return '', ''
+    test_part = reason.split(' | ', 1)[0] if ' | ' in reason else reason
+    parts = test_part.split('::', 1)
+    return parts[0], parts[1]
+
+
+def write_csv(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_name='set2', has_set2=True, log_failures=None):
     csv_rows = []
     csv_rows.append([''] + list(archs))
     for label, vals in rows:
@@ -313,18 +354,31 @@ def write_csv(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_na
 
     if failed_tests:
         csv_rows.append(['FAILED TESTS'])
-        header = ['Arch', 'Workflow', 'Test File', 'Test Class',
-                  'Test Name', f'Status ({s1_name})']
+        header = ['Arch', 'Test Config', 'Test File', 'Test Class',
+                  'Test Name', 'Shard', f'Status ({s1_name})']
         if has_set2:
             header.append(f'Status ({s2_name})')
         csv_rows.append(header)
         for t in failed_tests:
-            row = [t['arch'], t['workflow'], t['test_file'],
-                   t['test_class'], t['test_name'],
+            row = [t['arch'], t['test_config'], t['test_file'],
+                   t['test_class'], t['test_name'], t.get('shard', ''),
                    t[f'status_{s1_name}']]
             if has_set2:
                 row.append(t.get(f'status_{s2_name}', ''))
             csv_rows.append(row)
+        csv_rows.append([])
+
+    if log_failures:
+        csv_rows.append(['LOG-BASED FAILURES (not in XML)'])
+        csv_rows.append(['Arch', 'Platform', 'Test Config', 'Test File', 'Test Class', 'Test Name', 'Shard', 'Category', 'Log File'])
+        for lf in log_failures:
+            test_class, test_name = _parse_log_failure_names(lf)
+            csv_rows.append([
+                lf.get('arch', ''), lf.get('platform', ''), lf.get('test_config', ''),
+                lf.get('test_file', ''), test_class, test_name,
+                lf.get('shard', ''), lf.get('category', ''),
+                lf.get('log_file', ''),
+            ])
         csv_rows.append([])
 
     with open(output_path, 'w', newline='') as f:
@@ -332,7 +386,7 @@ def write_csv(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_na
     print(f'CSV written to {output_path}')
 
 
-def write_markdown(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_name='set2', has_set2=True):
+def write_markdown(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_name='set2', has_set2=True, log_failures=None):
     lines = []
     current_section = []
 
@@ -366,16 +420,16 @@ def write_markdown(rows, archs, output_path, failed_tests=None, s1_name='set1', 
     if failed_tests:
         lines.append('### FAILED TESTS')
         lines.append('')
-        cols = ['Arch', 'Workflow', 'Test File', 'Test Class', 'Test Name',
-                f'Status ({s1_name})']
+        cols = ['Arch', 'Test Config', 'Test File', 'Test Class', 'Test Name',
+                'Shard', f'Status ({s1_name})']
         if has_set2:
             cols.append(f'Status ({s2_name})')
         lines.append('| ' + ' | '.join(cols) + ' |')
         lines.append('| ' + ' | '.join(['---'] * len(cols)) + ' |')
         for t in failed_tests:
-            line = (f"| {t['arch']} | {t['workflow']} | {t['test_file']} "
+            line = (f"| {t['arch']} | {t['test_config']} | {t['test_file']} "
                     f"| {t['test_class']} | {t['test_name']} "
-                    f"| {t[f'status_{s1_name}']}")
+                    f"| {t.get('shard', '')} | {t[f'status_{s1_name}']}")
             if has_set2:
                 line += f" | {t.get(f'status_{s2_name}', '')}"
             line += ' |'
@@ -385,6 +439,24 @@ def write_markdown(rows, archs, output_path, failed_tests=None, s1_name='set1', 
         lines.append('### FAILED TESTS')
         lines.append('')
         lines.append('No failed tests found.')
+        lines.append('')
+
+    if log_failures:
+        lines.append('### LOG-BASED FAILURES (not in XML)')
+        lines.append('')
+        lines.append('These test failures were detected from CI log files but have no XML report')
+        lines.append('(typically due to timeouts, crashes, or process kills).')
+        lines.append('')
+        lines.append('| Arch | Platform | Test Config | Test File | Test Class | Test Name | Shard | Category |')
+        lines.append('| --- | --- | --- | --- | --- | --- | --- | --- |')
+        for lf in log_failures:
+            test_class, test_name = _parse_log_failure_names(lf)
+            lines.append(
+                f"| {lf.get('arch', '')} | {lf.get('platform', '')} | {lf.get('test_config', '')} "
+                f"| {lf.get('test_file', '')} | {test_class} "
+                f"| {test_name} | {lf.get('shard', '')} "
+                f"| {lf.get('category', '')} |"
+            )
         lines.append('')
 
     md = '\n'.join(lines)
@@ -414,13 +486,14 @@ def main():
     data_rows = build_rows(args, archs, arch_data)
     failed = collect_failed_tests(arch_data, archs, args.set1_name, args.set2_name)
     any_has_set2 = any(d.get('has_set2', True) for d in arch_data.values())
+    log_failures = load_log_failures(args.log_failures) if args.log_failures else []
 
     output_base = args.output
     if output_base.endswith('.csv') or output_base.endswith('.md'):
         output_base = output_base.rsplit('.', 1)[0]
 
-    write_csv(data_rows, archs, f'{output_base}.csv', failed, args.set1_name, args.set2_name, has_set2=any_has_set2)
-    write_markdown(data_rows, archs, f'{output_base}.md', failed, args.set1_name, args.set2_name, has_set2=any_has_set2)
+    write_csv(data_rows, archs, f'{output_base}.csv', failed, args.set1_name, args.set2_name, has_set2=any_has_set2, log_failures=log_failures)
+    write_markdown(data_rows, archs, f'{output_base}.md', failed, args.set1_name, args.set2_name, has_set2=any_has_set2, log_failures=log_failures)
 
 
 if __name__ == '__main__':
