@@ -233,43 +233,64 @@ def main() -> int:
     rocm = args.rocm_version
     rocm_only = bool(rocm and not args.torch_version)
     torch_prefix = args.torch_version_prefix if rocm_only else None
-    # Resolve versions: either discover latest per-ROCm from index (rocm_only) or use args.
+    break_sys = not args.no_break_system_packages
+
     if rocm_only:
-        versions = {}
-        for p in PYTORCH_PKGS:
-            prefix = torch_prefix if p == "torch" else None
-            versions[p] = get_latest_package_version_for_rocm(
-                index_url, p, rocm, required=PACKAGES.get(p), version_prefix=prefix,
-            )
-        # Don't pin triton in auto-discovery mode: public nightlies use git-hash local
-        # versions (e.g. 3.7.0+git20a46016.rocm...) that pip cannot match via ==.
-        # Let torch's dependency resolver pull the correct triton instead.
-        versions["triton"] = None
+        # Two-pass install:
+        #   Pass 1: torch (pinned) + rocm[devel] (pinned)
+        #   Pass 2: torchaudio, torchvision, triton (unpinned — pip resolves compatibility)
+        torch_version = get_latest_package_version_for_rocm(
+            index_url, "torch", rocm, required=True, version_prefix=torch_prefix,
+        )
+
+        print_banner("PyTorch Wheels Installation")
+        print(f"Index URL:      {index_url}")
+        print(f"AMDGPU Family:  {args.amdgpu_family}")
+        print(f"Python:         {sys.version_info.major}.{sys.version_info.minor}")
+        print(f"torch:          {torch_version}")
+        print(f"rocm[devel]:    {rocm}")
+        print(f"torchaudio:     (pip resolves)")
+        print(f"torchvision:    (pip resolves)")
+        print(f"triton:         (pip resolves)")
+        print("=" * 50)
+
+        # Pass 1: install torch + rocm[devel] with exact versions
+        primary = [
+            build_package_spec("torch", torch_version),
+            build_package_spec("rocm[devel]", rocm),
+        ]
+        print_banner("Pass 1: torch + rocm[devel]")
+        print(f"Installing: {', '.join(primary)}")
+        run_pip_install(index_url, primary, break_sys)
+
+        # Pass 2: install companion packages without pinning — pip picks
+        # versions compatible with the torch that's already installed
+        companions = ["torchaudio", "torchvision", "triton"]
+        print_banner("Pass 2: torchaudio, torchvision, triton (unpinned)")
+        print(f"Installing: {', '.join(companions)}")
+        run_pip_install(index_url, companions, break_sys)
     else:
+        # Explicit versions mode — install everything in one shot
         arg_attrs = ["torch_version", "torchaudio_version", "torchvision_version", "triton_version"]
         versions = {p: getattr(args, a) for p, a in zip(PYTORCH_PKGS, arg_attrs)}
-    versions["rocm[devel]"] = rocm if rocm else None
+        versions["rocm[devel]"] = rocm if rocm else None
 
-    # Print configuration
-    print_banner("PyTorch Wheels Installation")
-    print(f"Index URL:      {index_url}")
-    print(f"AMDGPU Family:  {args.amdgpu_family}")
-    print(f"Python:         {sys.version_info.major}.{sys.version_info.minor}")
-    for name, version in versions.items():
-        print(f"{name:14}: {version or 'latest'}")
-    print("=" * 50)
+        print_banner("PyTorch Wheels Installation")
+        print(f"Index URL:      {index_url}")
+        print(f"AMDGPU Family:  {args.amdgpu_family}")
+        print(f"Python:         {sys.version_info.major}.{sys.version_info.minor}")
+        for name, version in versions.items():
+            print(f"{name:14}: {version or 'latest'}")
+        print("=" * 50)
 
-    # Build package list. In rocm_only mode, skip torchaudio/torchvision/triton when discovery
-    # returned None so we don't install "latest" (wrong ROCm); they are pulled as torch deps.
-    packages = []
-    for name, always_install in PACKAGES.items():
-        version = versions.get(name)
-        if always_install or version:
-            packages.append(build_package_spec(name, version))
+        packages = []
+        for name, always_install in PACKAGES.items():
+            version = versions.get(name)
+            if always_install or version:
+                packages.append(build_package_spec(name, version))
 
-    # Install
-    print(f"Installing: {', '.join(packages)}")
-    run_pip_install(index_url, packages, not args.no_break_system_packages)
+        print(f"Installing: {', '.join(packages)}")
+        run_pip_install(index_url, packages, break_sys)
 
     # Verify
     if not args.skip_verify and not verify_installation():
