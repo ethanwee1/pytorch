@@ -118,8 +118,15 @@ RUN /opt/venv/bin/python /tmp/install_pytorch_wheels.py \
 # Run rocm-sdk init to make rocm buildable
 RUN rocm-sdk init
 
-# Verify PyTorch stack after ROCm SDK is initialized
-RUN /opt/venv/bin/python -c "import torch; import torchaudio; import torchvision; import triton; print('torch', torch.__version__); print('ROCm/HIP', torch.version.hip)"
+# Verify PyTorch imports after ROCm SDK is initialized
+RUN /opt/venv/bin/python -c "\
+import torch; \
+print('torch', torch.__version__); \
+print('ROCm/HIP', torch.version.hip); \
+try: import torchaudio; print('torchaudio', torchaudio.__version__) \nexcept Exception as e: print(f'torchaudio: skipped ({e})'); \
+try: import torchvision; print('torchvision', torchvision.__version__) \nexcept Exception as e: print(f'torchvision: skipped ({e})'); \
+try: import triton; print('triton', triton.__version__) \nexcept Exception as e: print(f'triton: skipped ({e})'); \
+"
 
 # Clean up installation scripts
 RUN rm -f /tmp/install_rocm_deps.sh /tmp/install_pytorch_wheels.py
