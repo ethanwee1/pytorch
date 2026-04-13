@@ -79,9 +79,9 @@ env:
   DEFAULT_BASE_IMAGE: "ubuntu:24.04"
 
 jobs:
-  # ── Nightly matrix build (schedule + push trigger) ──────────────────────
+  # ── Nightly matrix build (schedule only) ─────────────────────────────────
   nightly-matrix:
-    if: github.event_name == 'schedule' || github.event_name == 'push'
+    if: github.event_name == 'schedule'
     strategy:
       fail-fast: false
       matrix:
@@ -262,9 +262,9 @@ jobs:
           echo "| Python | ${{ steps.cfg.outputs.python_version }} |" >> $GITHUB_STEP_SUMMARY
           echo "| ROCm (discovered) | ${{ steps.cfg.outputs.rocm_version }} |" >> $GITHUB_STEP_SUMMARY
 
-  # ── Manual dispatch build (single image) ────────────────────────────────
+  # ── Single image build (manual dispatch or push) ─────────────────────────
   build-docker:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
     name: "Build | ${{ inputs.amdgpu_family }} | torch ${{ inputs.torch_version_prefix || inputs.torch_version || 'latest' }}"
     runs-on: ubuntu-latest
     steps:
