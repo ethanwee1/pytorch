@@ -1,0 +1,113 @@
+# pytorch_runtime.Dockerfile
+#
+# Runtime note:
+# - This is a user-space ROCm runtime image with PyTorch. It does NOT include kernel drivers.
+# - Host must provide compatible AMDGPU/ROCm kernel components and device access (e.g., --device=/dev/kfd --device=/dev/dri).
+# - Typical run flags: --device=/dev/kfd --device=/dev/dri (and often appropriate group/permission settings).
+#
+# Supported base images (examples)
+# - ubuntu:24.04
+# - almalinux:8
+# - mcr.microsoft.com/azurelinux/base/core:3.0
+#
+# Build arguments
+# - BASE_IMAGE       : Base Docker image (default: ubuntu:24.04)
+# - ROCM_VERSION     : Full ROCm version string. Supported formats:
+#                      - Nightly: 7.13.0a20260413
+#                      - Dev: 7.12.0.dev0+849eec43b2075459511b9a9ffe3bf1948490e9ee
+# - AMDGPU_FAMILY    : AMD GPU family (e.g., gfx94X-dcgpu, gfx90X-dcgpu, gfx950-dcgpu)
+# - PYTHON_VERSION   : Python version for PyTorch (default: 3.12)
+# - INDEX_URL        : (Required) Base URL for PyTorch wheels index
+# - TORCH_VERSION      : Optional specific PyTorch version. If not set, installs latest.
+# - TORCHAUDIO_VERSION : Optional specific torchaudio version. If not set, installs latest.
+# - TORCHVISION_VERSION: Optional specific torchvision version. If not set, installs latest.
+# - TRITON_VERSION     : Optional specific triton version. If not set, uses torch's dependency.
+#
+# Note: The PyTorch source is included at /workspace/pytorch (from the repo root).
+#
+# Build example (run from repo root):
+#
+#   docker build \
+#     --build-arg BASE_IMAGE=ubuntu:24.04 \
+#     --build-arg ROCM_VERSION=7.13.0a20260413 \
+#     --build-arg AMDGPU_FAMILY=gfx94X-dcgpu \
+#     --build-arg PYTHON_VERSION=3.12 \
+#     --build-arg INDEX_URL=https://rocm.nightlies.amd.com/v2-staging \
+#     -f dockerfiles/pytorch_runtime.Dockerfile \
+#     -t pytorch-rocm:ubuntu24.04-gfx94X-dcgpu-7.13.0a20260413 \
+#     .
+#
+
+# Base image selection
+ARG BASE_IMAGE=ubuntu:24.04
+FROM ${BASE_IMAGE}
+
+# ROCm configuration arguments
+ARG ROCM_VERSION
+ARG AMDGPU_FAMILY
+ARG RELEASE_TYPE=nightly
+
+# PyTorch configuration arguments
+ARG PYTHON_VERSION=3.12
+ARG INDEX_URL
+ARG TORCH_VERSION
+ARG TORCHAUDIO_VERSION
+ARG TORCHVISION_VERSION
+ARG TRITON_VERSION
+ENV ROCM_HOME="/opt/venv/lib/python${PYTHON_VERSION}/site-packages/_rocm_sdk_devel" \
+    ROCM_BIN="/opt/venv/lib/python${PYTHON_VERSION}/site-packages/_rocm_sdk_devel/bin" \
+    ROCM_CMAKE_PREFIX="/opt/venv/lib/python${PYTHON_VERSION}/site-packages/_rocm_sdk_devel/lib/cmake" \
+    ROCM_PATH="/opt/venv/lib/python${PYTHON_VERSION}/site-packages/_rocm_sdk_devel" \
+    ROCM_SOURCE_DIR="/opt/venv/lib/python${PYTHON_VERSION}/site-packages/_rocm_sdk_devel" \
+    PYTORCH_ROCM_ARCH="${AMDGPU_FAMILY}"
+
+ENV LD_LIBRARY_PATH="${ROCM_HOME}/lib:${ROCM_HOME}/lib/rocm_sysdeps/lib:${LD_LIBRARY_PATH}"
+
+LABEL image.title="PyTorch + ROCm runtime image" \
+    image.version="${ROCM_VERSION}" \
+    npi.python_version="${PYTHON_VERSION}" \
+    npi.amdgpu_family="${AMDGPU_FAMILY}" \
+    npi.rocm_version="${ROCM_VERSION}"
+
+# Copy installation scripts
+COPY .github/scripts/install_rocm_deps.sh /tmp/
+COPY .github/scripts/install_pytorch_wheels.py /tmp/
+
+# Copy PyTorch source from the repo root
+COPY . /workspace/pytorch
+
+# Install system dependencies
+RUN chmod +x /tmp/install_rocm_deps.sh && \
+    /tmp/install_rocm_deps.sh
+
+# Create Python virtual environment and upgrade pip/setuptools
+RUN python${PYTHON_VERSION} -m venv /opt/venv && \
+    /opt/venv/bin/python -m pip install --upgrade pip && \
+    /opt/venv/bin/python -m pip install --upgrade setuptools
+
+ENV PATH="/opt/venv/bin:${PATH}"
+
+# Install PyTorch wheels from the public nightlies index.
+RUN /opt/venv/bin/python /tmp/install_pytorch_wheels.py \
+        --no-break-system-packages \
+        --skip-verify \
+        --index-url "${INDEX_URL}" \
+        --amdgpu-family "${AMDGPU_FAMILY}" \
+        ${ROCM_VERSION:+--rocm-version "${ROCM_VERSION}"} \
+        ${TORCH_VERSION:+--torch-version "${TORCH_VERSION}"} \
+        ${TORCHAUDIO_VERSION:+--torchaudio-version "${TORCHAUDIO_VERSION}"} \
+        ${TORCHVISION_VERSION:+--torchvision-version "${TORCHVISION_VERSION}"} \
+        ${TRITON_VERSION:+--triton-version "${TRITON_VERSION}"}
+
+# Run rocm-sdk init to make rocm buildable
+RUN rocm-sdk init
+
+# Verify PyTorch stack after ROCm SDK is initialized
+RUN /opt/venv/bin/python -c "import torch; import torchaudio; import torchvision; import triton; print('torch', torch.__version__); print('ROCm/HIP', torch.version.hip)"
+
+# Clean up installation scripts
+RUN rm -f /tmp/install_rocm_deps.sh /tmp/install_pytorch_wheels.py
+
+ENV VIRTUAL_ENV=/opt/venv
+
+WORKDIR /workspace/pytorch

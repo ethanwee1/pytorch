@@ -1,0 +1,164 @@
+name: Build Portable Linux PyTorch Dockers
+
+on:
+  workflow_dispatch:
+    inputs:
+      amdgpu_family:
+        type: choice
+        options:
+          - gfx94X-dcgpu
+          - gfx950-dcgpu
+          - gfx90X-dcgpu
+          - gfx120X-all
+          - gfx110X-all
+          - gfx110X-dgpu
+          - gfx103X-dgpu
+          - gfx101X-dgpu
+        default: gfx94X-dcgpu
+      python_version:
+        required: true
+        type: string
+        default: "3.12"
+      rocm_version:
+        description: ROCm version to install (e.g. "7.13.0a20260413")
+        required: true
+        type: string
+      torch_version:
+        description: PyTorch version (optional - installs latest from index if not set)
+        type: string
+      torchaudio_version:
+        description: Torchaudio version (optional - installs latest from index if not set)
+        type: string
+      torchvision_version:
+        description: Torchvision version (optional - installs latest from index if not set)
+        type: string
+      triton_version:
+        description: Triton version (optional - uses torch dependency if not set)
+        type: string
+      index_url:
+        description: Base URL for PyTorch wheels index
+        required: false
+        type: string
+        default: "https://rocm.nightlies.amd.com/v2-staging"
+      base_image:
+        description: Base Docker image (default ubuntu:24.04)
+        type: string
+        default: "ubuntu:24.04"
+
+permissions:
+  contents: read
+
+run-name: Build PyTorch Docker (${{ inputs.amdgpu_family }}, torch ${{ inputs.torch_version || 'latest' }}, ROCm ${{ inputs.rocm_version }})
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: rocmshared/pytorch-private
+
+jobs:
+  build-docker:
+    name: Build Docker | ${{ inputs.amdgpu_family }} | torch ${{ inputs.torch_version || 'latest' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate Docker image tag
+        id: docker-tag
+        run: |
+          TORCH_VERSION_SAFE="${{ inputs.torch_version }}"
+          if [ -z "$TORCH_VERSION_SAFE" ]; then
+            TORCH_VERSION_SAFE="latest"
+          else
+            TORCH_VERSION_SAFE="${TORCH_VERSION_SAFE//+/-}"
+          fi
+
+          ROCM_VERSION_SAFE="${{ inputs.rocm_version }}"
+          ROCM_VERSION_SAFE="${ROCM_VERSION_SAFE//+/-}"
+
+          IMAGE_TAG="pytorch-${TORCH_VERSION_SAFE}-rocm${ROCM_VERSION_SAFE}-ubuntu24.04-${{ inputs.amdgpu_family }}"
+          echo "tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          echo "Generated image tag: ${IMAGE_TAG}"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build Docker image
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.docker-tag.outputs.tag }}"
+
+          docker build \
+            --file dockerfiles/pytorch_runtime.Dockerfile \
+            --tag "${IMAGE}" \
+            --label "org.opencontainers.image.title=PyTorch ROCm" \
+            --label "org.opencontainers.image.description=PyTorch with ROCm runtime" \
+            --label "org.opencontainers.image.version=${{ inputs.torch_version }}" \
+            --label "pytorch.version=${{ inputs.torch_version }}" \
+            --label "rocm.version=${{ inputs.rocm_version }}" \
+            --label "amdgpu.family=${{ inputs.amdgpu_family }}" \
+            --build-arg "BASE_IMAGE=${{ inputs.base_image || 'ubuntu:24.04' }}" \
+            --build-arg "ROCM_VERSION=${{ inputs.rocm_version }}" \
+            --build-arg "AMDGPU_FAMILY=${{ inputs.amdgpu_family }}" \
+            --build-arg "PYTHON_VERSION=${{ inputs.python_version }}" \
+            --build-arg "INDEX_URL=${{ inputs.index_url }}" \
+            --build-arg "TORCH_VERSION=${{ inputs.torch_version }}" \
+            --build-arg "TORCHAUDIO_VERSION=${{ inputs.torchaudio_version }}" \
+            --build-arg "TORCHVISION_VERSION=${{ inputs.torchvision_version }}" \
+            --build-arg "TRITON_VERSION=${{ inputs.triton_version }}" \
+            .
+
+          echo "Docker image built successfully: ${IMAGE}"
+
+      - name: Get ROCm packages info
+        id: rocm-packages
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.docker-tag.outputs.tag }}"
+          echo "Getting ROCm packages from Docker image..."
+
+          ROCM_PACKAGES=$(docker run --rm "${IMAGE}" pip freeze | grep -i rocm || echo "No ROCm packages found")
+          echo "rocm_packages<<EOF" >> $GITHUB_OUTPUT
+          echo "${ROCM_PACKAGES}" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          echo "ROCm packages:"
+          echo "${ROCM_PACKAGES}"
+
+      - name: Push Docker image
+        run: |
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.docker-tag.outputs.tag }}
+          echo "Docker image pushed successfully"
+
+      - name: Post-build summary
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.docker-tag.outputs.tag }}"
+
+          echo "## PyTorch Docker Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Docker Image" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "${IMAGE}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| AMDGPU Family | ${{ inputs.amdgpu_family }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Python Version | ${{ inputs.python_version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Base Image | ${{ inputs.base_image || 'ubuntu:24.04' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Index URL | ${{ inputs.index_url }} |" >> $GITHUB_STEP_SUMMARY
+          PACKAGES='${{ steps.rocm-packages.outputs.rocm_packages }}'
+          PACKAGES_ROW=$(printf '%s' "$PACKAGES" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')
+          PACKAGES_ROW="${PACKAGES_ROW//$'\n'/<br>}"
+          echo "| ROCm packages | ${PACKAGES_ROW} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Usage" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${IMAGE}" >> $GITHUB_STEP_SUMMARY
+          echo "docker run --rm -it --device=/dev/kfd --device=/dev/dri \\" >> $GITHUB_STEP_SUMMARY
+          echo "  --security-opt seccomp=unconfined \\" >> $GITHUB_STEP_SUMMARY
+          echo "  ${IMAGE}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
