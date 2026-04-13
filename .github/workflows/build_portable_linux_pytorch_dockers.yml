@@ -37,9 +37,6 @@ on:
       rocm_version:
         description: "ROCm version (e.g. '7.13.0a20260413'). Leave empty to auto-discover from the latest available torch wheel."
         type: string
-      torch_version_prefix:
-        description: "Torch version prefix for discovery (e.g. '2.9', '2.11'). Leave empty for latest nightly."
-        type: string
       index_url:
         description: Base URL for PyTorch wheels index
         type: string
@@ -50,9 +47,10 @@ permissions:
 
 run-name: >-
   ${{ github.event_name == 'schedule' && 'Nightly Docker builds' ||
-      format('Build PyTorch Docker ({0}, torch {1}, ROCm {2})',
+      format('Build PyTorch Docker ({0}, {1}/{2}, ROCm {3})',
              inputs.amdgpu_family || 'gfx950-dcgpu',
-             inputs.torch_version_prefix || inputs.torch_version || 'latest',
+             inputs.pytorch_repo || 'pytorch/pytorch',
+             inputs.pytorch_branch || 'nightly',
              inputs.rocm_version || 'auto') }}
 
 env:
@@ -71,20 +69,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - torch_prefix: ""
-            pytorch_repo: pytorch/pytorch
+          - pytorch_repo: pytorch/pytorch
             pytorch_branch: nightly
             label: nightly
-          - torch_prefix: "2.11"
-            pytorch_repo: ROCm/pytorch
+          - pytorch_repo: ROCm/pytorch
             pytorch_branch: release/2.11
             label: "2.11"
-          - torch_prefix: "2.10"
-            pytorch_repo: ROCm/pytorch
+          - pytorch_repo: ROCm/pytorch
             pytorch_branch: release/2.10
             label: "2.10"
-          - torch_prefix: "2.9"
-            pytorch_repo: ROCm/pytorch
+          - pytorch_repo: ROCm/pytorch
             pytorch_branch: release/2.9
             label: "2.9"
     name: "Nightly | torch ${{ matrix.label }} | MI355"
@@ -101,10 +95,22 @@ jobs:
           path: pytorch-src
           fetch-depth: 1
 
+      - name: Derive torch version prefix from branch
+        id: prefix
+        run: |
+          BRANCH="${{ matrix.pytorch_branch }}"
+          if [[ "$BRANCH" =~ ^release/([0-9]+\.[0-9]+) ]]; then
+            echo "value=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
+            echo "Derived torch prefix: ${BASH_REMATCH[1]}"
+          else
+            echo "value=" >> $GITHUB_OUTPUT
+            echo "No prefix (nightly/main branch)"
+          fi
+
       - name: Discover ROCm version from index
         id: discover
         run: |
-          python3 - "${{ env.DEFAULT_INDEX_URL }}" "${{ env.DEFAULT_AMDGPU_FAMILY }}" "${{ matrix.torch_prefix }}" <<'PYEOF'
+          python3 - "${{ env.DEFAULT_INDEX_URL }}" "${{ env.DEFAULT_AMDGPU_FAMILY }}" "${{ steps.prefix.outputs.value }}" <<'PYEOF'
           import re, sys, urllib.request, urllib.parse
 
           index_url, gpu_family = sys.argv[1], sys.argv[2]
@@ -154,7 +160,7 @@ jobs:
           echo "rocm_version=${{ steps.discover.outputs.rocm_version }}" >> $GITHUB_OUTPUT
           echo "index_url=${{ env.DEFAULT_INDEX_URL }}" >> $GITHUB_OUTPUT
           echo "base_image=${{ env.DEFAULT_BASE_IMAGE }}" >> $GITHUB_OUTPUT
-          echo "torch_prefix=${{ matrix.torch_prefix }}" >> $GITHUB_OUTPUT
+          echo "torch_prefix=${{ steps.prefix.outputs.value }}" >> $GITHUB_OUTPUT
           echo "pytorch_repo=${{ matrix.pytorch_repo }}" >> $GITHUB_OUTPUT
           echo "pytorch_branch=${{ matrix.pytorch_branch }}" >> $GITHUB_OUTPUT
 
@@ -210,7 +216,7 @@ jobs:
             --build-arg "AMDGPU_FAMILY=${{ steps.cfg.outputs.amdgpu_family }}" \
             --build-arg "PYTHON_VERSION=${{ steps.cfg.outputs.python_version }}" \
             --build-arg "INDEX_URL=${{ steps.cfg.outputs.index_url }}" \
-            --build-arg "TORCH_VERSION_PREFIX=${{ matrix.torch_prefix }}" \
+            --build-arg "TORCH_VERSION_PREFIX=${{ steps.prefix.outputs.value }}" \
             pytorch-src
 
           echo "Docker image built successfully: ${IMAGE}"
@@ -250,7 +256,7 @@ jobs:
   # ── Single image build (manual dispatch) ──────────────────────────────────
   build-docker:
     if: github.event_name == 'workflow_dispatch'
-    name: "Build | ${{ inputs.amdgpu_family }} | torch ${{ inputs.torch_version_prefix || inputs.torch_version || 'latest' }}"
+    name: "Build | ${{ inputs.amdgpu_family }} | ${{ inputs.pytorch_repo || 'pytorch/pytorch' }}@${{ inputs.pytorch_branch || 'nightly' }}"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout workflow files
@@ -264,11 +270,23 @@ jobs:
           path: pytorch-src
           fetch-depth: 1
 
+      - name: Derive torch version prefix from branch
+        id: prefix
+        run: |
+          BRANCH="${{ inputs.pytorch_branch || 'nightly' }}"
+          if [[ "$BRANCH" =~ ^release/([0-9]+\.[0-9]+) ]]; then
+            echo "value=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
+            echo "Derived torch prefix: ${BASH_REMATCH[1]}"
+          else
+            echo "value=" >> $GITHUB_OUTPUT
+            echo "No prefix (nightly/main branch)"
+          fi
+
       - name: Discover ROCm version from index
         id: discover
         if: ${{ !inputs.rocm_version }}
         run: |
-          python3 - "${{ inputs.index_url || env.DEFAULT_INDEX_URL }}" "${{ inputs.amdgpu_family || env.DEFAULT_AMDGPU_FAMILY }}" "${{ inputs.torch_version_prefix }}" <<'PYEOF'
+          python3 - "${{ inputs.index_url || env.DEFAULT_INDEX_URL }}" "${{ inputs.amdgpu_family || env.DEFAULT_AMDGPU_FAMILY }}" "${{ steps.prefix.outputs.value }}" <<'PYEOF'
           import re, sys, urllib.request, urllib.parse
 
           index_url, gpu_family = sys.argv[1], sys.argv[2]
@@ -322,7 +340,7 @@ jobs:
 
           echo "index_url=${{ inputs.index_url || env.DEFAULT_INDEX_URL }}" >> $GITHUB_OUTPUT
           echo "base_image=${{ env.DEFAULT_BASE_IMAGE }}" >> $GITHUB_OUTPUT
-          echo "torch_prefix=${{ inputs.torch_version_prefix }}" >> $GITHUB_OUTPUT
+          echo "torch_prefix=${{ steps.prefix.outputs.value }}" >> $GITHUB_OUTPUT
           echo "pytorch_repo=${{ inputs.pytorch_repo || 'pytorch/pytorch' }}" >> $GITHUB_OUTPUT
           echo "pytorch_branch=${{ inputs.pytorch_branch || 'nightly' }}" >> $GITHUB_OUTPUT
 
