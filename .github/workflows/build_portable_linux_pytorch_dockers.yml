@@ -87,17 +87,19 @@ jobs:
       - name: Generate Docker image tag
         id: docker-tag
         run: |
-          TORCH_VERSION_SAFE="${{ steps.cfg.outputs.torch_version }}"
-          if [ -z "$TORCH_VERSION_SAFE" ]; then
-            TORCH_VERSION_SAFE="latest"
-          else
-            TORCH_VERSION_SAFE="${TORCH_VERSION_SAFE//+/-}"
-          fi
+          BRANCH="${GITHUB_REF_NAME}"
+          COMMIT="$(git rev-parse --short=8 HEAD)"
+          ROCM_VERSION="${{ steps.cfg.outputs.rocm_version }}"
+          PYTHON_VERSION="${{ steps.cfg.outputs.python_version }}"
+          GFX="${{ steps.cfg.outputs.amdgpu_family }}"
+          BASE_IMAGE="${{ steps.cfg.outputs.base_image }}"
 
-          ROCM_VERSION_SAFE="${{ steps.cfg.outputs.rocm_version }}"
-          ROCM_VERSION_SAFE="${ROCM_VERSION_SAFE//+/-}"
+          # Extract OS name from base image (e.g. "ubuntu:24.04" -> "ubuntu24.04")
+          OS=$(echo "${BASE_IMAGE}" | tr -d ':' | tr '/' '-')
 
-          IMAGE_TAG="pytorch-${TORCH_VERSION_SAFE}-rocm${ROCM_VERSION_SAFE}-ubuntu24.04-${{ steps.cfg.outputs.amdgpu_family }}"
+          IMAGE_TAG="pytorch-${BRANCH}-${COMMIT}-rocm${ROCM_VERSION}-${OS}-py${PYTHON_VERSION}-${GFX}"
+          # Docker tags cannot contain +
+          IMAGE_TAG="${IMAGE_TAG//+/-}"
           echo "tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
           echo "Generated image tag: ${IMAGE_TAG}"
 
