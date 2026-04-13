@@ -223,6 +223,10 @@ def main() -> int:
             p: get_latest_package_version_for_rocm(index_url, p, rocm, required=PACKAGES.get(p))
             for p in PYTORCH_PKGS
         }
+        # Don't pin triton in auto-discovery mode: public nightlies use git-hash local
+        # versions (e.g. 3.7.0+git20a46016.rocm...) that pip cannot match via ==.
+        # Let torch's dependency resolver pull the correct triton instead.
+        versions["triton"] = None
     else:
         arg_attrs = ["torch_version", "torchaudio_version", "torchvision_version", "triton_version"]
         versions = {p: getattr(args, a) for p, a in zip(PYTORCH_PKGS, arg_attrs)}
