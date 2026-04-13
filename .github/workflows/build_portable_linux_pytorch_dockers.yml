@@ -1,9 +1,6 @@
 name: Build Portable Linux PyTorch Dockers
 
 on:
-  push:
-    branches:
-      - add-portable-docker-build
   schedule:
     - cron: "0 6 * * *"   # daily at 06:00 UTC
   workflow_dispatch:
@@ -262,9 +259,9 @@ jobs:
           echo "| Python | ${{ steps.cfg.outputs.python_version }} |" >> $GITHUB_STEP_SUMMARY
           echo "| ROCm (discovered) | ${{ steps.cfg.outputs.rocm_version }} |" >> $GITHUB_STEP_SUMMARY
 
-  # ── Single image build (manual dispatch or push) ─────────────────────────
+  # ── Single image build (manual dispatch) ──────────────────────────────────
   build-docker:
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    if: github.event_name == 'workflow_dispatch'
     name: "Build | ${{ inputs.amdgpu_family }} | torch ${{ inputs.torch_version_prefix || inputs.torch_version || 'latest' }}"
     runs-on: ubuntu-latest
     steps:
