@@ -55,7 +55,7 @@ run-name: Build PyTorch Docker (${{ inputs.amdgpu_family || 'gfx94X-dcgpu' }}, t
 
 env:
   REGISTRY: docker.io
-  IMAGE_NAME: rocm/pytorch-private
+  IMAGE_NAME: rocmshared/pytorch-private
   # Defaults for push-triggered runs (inputs.* are empty on push)
   DEFAULT_AMDGPU_FAMILY: gfx94X-dcgpu
   DEFAULT_PYTHON_VERSION: "3.12"
