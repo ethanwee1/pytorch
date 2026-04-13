@@ -5,6 +5,23 @@ on:
     - cron: "0 6 * * *"   # daily at 06:00 UTC
   workflow_dispatch:
     inputs:
+      pytorch_repo:
+        description: "GitHub repo to clone into the image (e.g. 'pytorch/pytorch' or 'ROCm/pytorch')"
+        type: string
+        default: "pytorch/pytorch"
+      pytorch_branch:
+        description: "Branch to clone. Default 'nightly' matches theRock wheel builds. For releases use ROCm/pytorch with 'release/2.11', 'release/2.10', etc."
+        type: string
+        default: "nightly"
+      python_version:
+        type: choice
+        options:
+          - "3.12"
+          - "3.10"
+          - "3.11"
+          - "3.13"
+          - "3.14"
+        default: "3.12"
       amdgpu_family:
         type: choice
         options:
@@ -17,49 +34,16 @@ on:
           - gfx103X-dgpu
           - gfx101X-dgpu
         default: gfx950-dcgpu
-      python_version:
-        type: choice
-        options:
-          - "3.12"
-          - "3.10"
-          - "3.11"
-          - "3.13"
-          - "3.14"
-        default: "3.12"
       rocm_version:
         description: "ROCm version (e.g. '7.13.0a20260413'). Leave empty to auto-discover from the latest available torch wheel."
         type: string
       torch_version_prefix:
         description: "Torch version prefix for discovery (e.g. '2.9', '2.11'). Leave empty for latest nightly."
         type: string
-      torch_version:
-        description: Exact PyTorch version (optional - overrides prefix and auto-discovery)
-        type: string
-      torchaudio_version:
-        description: Torchaudio version (optional - installs latest from index if not set)
-        type: string
-      torchvision_version:
-        description: Torchvision version (optional - installs latest from index if not set)
-        type: string
-      triton_version:
-        description: Triton version (optional - uses torch dependency if not set)
-        type: string
-      pytorch_repo:
-        description: "GitHub repo to clone into the image (e.g. 'pytorch/pytorch' or 'ROCm/pytorch')"
-        type: string
-        default: "pytorch/pytorch"
-      pytorch_branch:
-        description: "Branch to clone. Default 'nightly' matches theRock wheel builds. For releases use ROCm/pytorch with 'release/2.11', 'release/2.10', etc."
-        type: string
-        default: "nightly"
       index_url:
         description: Base URL for PyTorch wheels index
         type: string
         default: "https://rocm.nightlies.amd.com/v2-staging"
-      base_image:
-        description: Base Docker image
-        type: string
-        default: "ubuntu:24.04"
 
 permissions:
   contents: read
@@ -337,12 +321,8 @@ jobs:
           echo "rocm_version=${ROCM}" >> $GITHUB_OUTPUT
 
           echo "index_url=${{ inputs.index_url || env.DEFAULT_INDEX_URL }}" >> $GITHUB_OUTPUT
-          echo "base_image=${{ inputs.base_image || env.DEFAULT_BASE_IMAGE }}" >> $GITHUB_OUTPUT
-          echo "torch_version=${{ inputs.torch_version }}" >> $GITHUB_OUTPUT
+          echo "base_image=${{ env.DEFAULT_BASE_IMAGE }}" >> $GITHUB_OUTPUT
           echo "torch_prefix=${{ inputs.torch_version_prefix }}" >> $GITHUB_OUTPUT
-          echo "torchaudio_version=${{ inputs.torchaudio_version }}" >> $GITHUB_OUTPUT
-          echo "torchvision_version=${{ inputs.torchvision_version }}" >> $GITHUB_OUTPUT
-          echo "triton_version=${{ inputs.triton_version }}" >> $GITHUB_OUTPUT
           echo "pytorch_repo=${{ inputs.pytorch_repo || 'pytorch/pytorch' }}" >> $GITHUB_OUTPUT
           echo "pytorch_branch=${{ inputs.pytorch_branch || 'nightly' }}" >> $GITHUB_OUTPUT
 
