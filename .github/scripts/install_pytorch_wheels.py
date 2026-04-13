@@ -53,9 +53,14 @@ def build_package_spec(name: str, version: str | None) -> str:
     return f"{name}=={version}" if version else name
 
 def get_latest_package_version_for_rocm(
-    index_url: str, package_name: str, rocm_version: str, required: bool = True
+    index_url: str, package_name: str, rocm_version: str, required: bool = True,
+    version_prefix: str | None = None,
 ) -> str | None:
-    """Return latest package version containing rocm_version by parsing the index HTML."""
+    """Return latest package version containing rocm_version by parsing the index HTML.
+
+    If version_prefix is set (e.g. "2.9"), only versions whose base part starts
+    with that prefix are considered.
+    """
 
     # Build the URL for this package's index page (e.g. .../gfx1250/torch/).
     rocm_tag = f"rocm{rocm_version}"
@@ -81,10 +86,16 @@ def get_latest_package_version_for_rocm(
         ver = s.split("-")[0]
         if rocm_tag in ver:
             matching.append(urllib.parse.unquote(ver))
+    # Filter by version prefix (e.g. "2.9" matches "2.9.0+...", "2.9.1+...").
+    if version_prefix and matching:
+        matching = [v for v in matching if v.split("+")[0].startswith(version_prefix)]
     # No matching wheels: if required (always_install), fail; otherwise return None (package will be skipped).
     if not matching:
         if required:
-            print(f"Error: no wheel found for {package_name} with ROCm {rocm_version}", file=sys.stderr)
+            msg = f"Error: no wheel found for {package_name} with ROCm {rocm_version}"
+            if version_prefix:
+                msg += f" and version prefix {version_prefix}"
+            print(msg, file=sys.stderr)
             sys.exit(1)
         return None
     # Pick the latest version by comparing numeric parts (e.g. 0.26.0 > 0.25.0).
@@ -192,6 +203,11 @@ def main() -> int:
         "--torch-version", help="Specific torch version (default: latest)"
     )
     parser.add_argument(
+        "--torch-version-prefix",
+        help="Torch version prefix for discovery (e.g. '2.9' matches 2.9.x). "
+             "Only used in auto-discovery mode (--rocm-version without --torch-version).",
+    )
+    parser.add_argument(
         "--torchaudio-version", help="Specific torchaudio version (default: latest)"
     )
     parser.add_argument(
@@ -217,12 +233,15 @@ def main() -> int:
 
     rocm = args.rocm_version
     rocm_only = bool(rocm and not args.torch_version)
+    torch_prefix = args.torch_version_prefix if rocm_only else None
     # Resolve versions: either discover latest per-ROCm from index (rocm_only) or use args.
     if rocm_only:
-        versions = {
-            p: get_latest_package_version_for_rocm(index_url, p, rocm, required=PACKAGES.get(p))
-            for p in PYTORCH_PKGS
-        }
+        versions = {}
+        for p in PYTORCH_PKGS:
+            prefix = torch_prefix if p == "torch" else None
+            versions[p] = get_latest_package_version_for_rocm(
+                index_url, p, rocm, required=PACKAGES.get(p), version_prefix=prefix,
+            )
         # Don't pin triton in auto-discovery mode: public nightlies use git-hash local
         # versions (e.g. 3.7.0+git20a46016.rocm...) that pip cannot match via ==.
         # Let torch's dependency resolver pull the correct triton instead.

@@ -51,6 +51,7 @@ ARG RELEASE_TYPE=nightly
 ARG PYTHON_VERSION=3.12
 ARG INDEX_URL
 ARG TORCH_VERSION
+ARG TORCH_VERSION_PREFIX
 ARG TORCHAUDIO_VERSION
 ARG TORCHVISION_VERSION
 ARG TRITON_VERSION
@@ -109,6 +110,7 @@ RUN /opt/venv/bin/python /tmp/install_pytorch_wheels.py \
         --amdgpu-family "${AMDGPU_FAMILY}" \
         ${ROCM_VERSION:+--rocm-version "${ROCM_VERSION}"} \
         ${TORCH_VERSION:+--torch-version "${TORCH_VERSION}"} \
+        ${TORCH_VERSION_PREFIX:+--torch-version-prefix "${TORCH_VERSION_PREFIX}"} \
         ${TORCHAUDIO_VERSION:+--torchaudio-version "${TORCHAUDIO_VERSION}"} \
         ${TORCHVISION_VERSION:+--torchvision-version "${TORCHVISION_VERSION}"} \
         ${TRITON_VERSION:+--triton-version "${TRITON_VERSION}"}
