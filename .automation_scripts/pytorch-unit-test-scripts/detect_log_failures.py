@@ -56,10 +56,6 @@ LOG_FILE_MAP = {
     "rocm": ("rocm", "default"),
     "rocm_dist": ("rocm", "distributed"),
     "rocm_inductor": ("rocm", "inductor"),
-    "cuda": ("cuda", "default"),
-    "cuda_dist": ("cuda", "distributed"),
-    "cuda_inductor": ("cuda", "inductor"),
-    "baseline": ("baseline", "default"),
 }
 
 
