@@ -231,7 +231,12 @@ def compute_overall_stats(rows, s1_col, s2_col, s1_time_col, s2_time_col, s1_nam
 
 
 def collect_failed_tests(arch_data, archs, s1_name, s2_name):
-    """Return a list of failed test rows across all architectures."""
+    """Return a list of failed test rows across all architectures.
+
+    Each entry includes an 'also_failing_in' field listing other architectures
+    where the same (test_file, test_class, test_name) tuple also fails on the
+    same platform (s1 or s2).
+    """
     failed = []
     for arch in archs:
         d = arch_data[arch]
@@ -240,21 +245,35 @@ def collect_failed_tests(arch_data, archs, s1_name, s2_name):
         for r in d['rows']:
             s1 = r[s1_col].strip()
             s2 = r[s2_col].strip() if has_set2 else ''
-            if s1 == 'FAILED' or s2 == 'FAILED':
-                shard = r.get(f'shard_{s1_name}', '') if s1 == 'FAILED' else r.get(f'shard_{s2_name}', '')
+            if s1 == 'FAILED':
                 entry = {
                     'arch': arch,
                     'test_file': r.get('test_file', ''),
                     'test_class': r.get('test_class', ''),
                     'test_name': r.get('test_name', ''),
                     'test_config': r.get('test_config', ''),
-                    'shard': shard,
+                    'shard': r.get(f'shard_{s1_name}', ''),
                     f'status_{s1_name}': s1,
                 }
                 if has_set2:
                     entry[f'status_{s2_name}'] = s2
                 failed.append(entry)
+
+    _add_cross_arch_info(failed)
     return failed
+
+
+def _add_cross_arch_info(failed_tests):
+    """Populate 'also_failing_in' for each entry based on matching test tuples."""
+    from collections import defaultdict
+    by_tuple = defaultdict(set)
+    for t in failed_tests:
+        key = (t['test_file'], t['test_class'], t['test_name'])
+        by_tuple[key].add(t['arch'])
+    for t in failed_tests:
+        key = (t['test_file'], t['test_class'], t['test_name'])
+        others = sorted(a for a in by_tuple[key] if a != t['arch'])
+        t['also_failing_in'] = ', '.join(others)
 
 
 def load_log_failures(filepaths):
@@ -352,19 +371,23 @@ def write_csv(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_na
             csv_rows.append([label] + list(vals))
     csv_rows.append([])
 
-    if failed_tests:
+    s1_failed = [t for t in (failed_tests or []) if t.get(f'status_{s1_name}') == 'FAILED']
+
+    if s1_failed:
         csv_rows.append(['FAILED TESTS'])
         header = ['Arch', 'Test Config', 'Test File', 'Test Class',
                   'Test Name', 'Shard', f'Status ({s1_name})']
         if has_set2:
             header.append(f'Status ({s2_name})')
+        header.append('Also Failing In')
         csv_rows.append(header)
-        for t in failed_tests:
+        for t in s1_failed:
             row = [t['arch'], t['test_config'], t['test_file'],
                    t['test_class'], t['test_name'], t.get('shard', ''),
                    t[f'status_{s1_name}']]
             if has_set2:
                 row.append(t.get(f'status_{s2_name}', ''))
+            row.append(t.get('also_failing_in', ''))
             csv_rows.append(row)
         csv_rows.append([])
 
@@ -417,22 +440,26 @@ def write_markdown(rows, archs, output_path, failed_tests=None, s1_name='set1', 
 
     flush_table()
 
-    if failed_tests:
-        lines.append('### FAILED TESTS')
+    s1_failed = [t for t in (failed_tests or []) if t.get(f'status_{s1_name}') == 'FAILED']
+
+    cols = ['Arch', 'Test Config', 'Test File', 'Test Class', 'Test Name',
+            'Shard', f'Status ({s1_name})']
+    if has_set2:
+        cols.append(f'Status ({s2_name})')
+    cols.append('Also Failing In')
+
+    if s1_failed:
+        lines.append(f'### FAILED TESTS ({len(s1_failed)})')
         lines.append('')
-        cols = ['Arch', 'Test Config', 'Test File', 'Test Class', 'Test Name',
-                'Shard', f'Status ({s1_name})']
-        if has_set2:
-            cols.append(f'Status ({s2_name})')
         lines.append('| ' + ' | '.join(cols) + ' |')
         lines.append('| ' + ' | '.join(['---'] * len(cols)) + ' |')
-        for t in failed_tests:
+        for t in s1_failed:
             line = (f"| {t['arch']} | {t['test_config']} | {t['test_file']} "
                     f"| {t['test_class']} | {t['test_name']} "
                     f"| {t.get('shard', '')} | {t[f'status_{s1_name}']}")
             if has_set2:
                 line += f" | {t.get(f'status_{s2_name}', '')}"
-            line += ' |'
+            line += f" | {t.get('also_failing_in', '')} |"
             lines.append(line)
         lines.append('')
     else:
