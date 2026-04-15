@@ -1,8 +1,8 @@
-# pytorch_runtime.Dockerfile
+# Dockerfile
 #
-# Runtime note:
-# - This is a user-space ROCm runtime image with PyTorch. It does NOT include kernel drivers.
-# - Host must provide compatible AMDGPU/ROCm kernel components and device access (e.g., --device=/dev/kfd --device=/dev/dri).
+# PyTorch + ROCm image built from TheRock portable wheels.
+# Does NOT include kernel drivers — the host must provide compatible
+# AMDGPU/ROCm kernel components and device access.
 #
 # Recommended docker run flags (mirrors TheRock CI container options):
 #   docker run \
@@ -41,7 +41,7 @@
 #     --build-arg AMDGPU_FAMILY=gfx94X-dcgpu \
 #     --build-arg PYTHON_VERSION=3.12 \
 #     --build-arg INDEX_URL=https://rocm.nightlies.amd.com/v2-staging \
-#     -f dockerfiles/pytorch_runtime.Dockerfile \
+#     -f dockerfiles/Dockerfile \
 #     -t pytorch-rocm:ubuntu24.04-gfx94X-dcgpu-7.13.0a20260413 \
 #     .
 #
@@ -63,12 +63,6 @@ ARG TORCH_VERSION_PREFIX
 ARG TORCHAUDIO_VERSION
 ARG TORCHVISION_VERSION
 ARG TRITON_VERSION
-
-LABEL image.title="PyTorch + ROCm runtime image" \
-    image.version="${ROCM_VERSION}" \
-    npi.python_version="${PYTHON_VERSION}" \
-    npi.amdgpu_family="${AMDGPU_FAMILY}" \
-    npi.rocm_version="${ROCM_VERSION}"
 
 # Copy installation scripts
 COPY .github/scripts/install_rocm_deps.sh /tmp/
