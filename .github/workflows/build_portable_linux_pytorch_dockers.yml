@@ -187,8 +187,11 @@ jobs:
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
+          # ROCm/pytorch: use DOCKERUSERNAME / DOCKERTOKEN
+          # username: ${{ secrets.DOCKERUSERNAME }}
+          # password: ${{ secrets.DOCKERTOKEN }}
           username: ${{ secrets.DOCKERUSERNAME }}
-          password: ${{ secrets.DOCKERTOKEN }}
+          password: ${{ secrets.DCKRPAT }}
 
       - name: Prepare build context
         run: |
@@ -363,8 +366,11 @@ jobs:
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
+          # ROCm/pytorch: use DOCKERUSERNAME / DOCKERTOKEN
+          # username: ${{ secrets.DOCKERUSERNAME }}
+          # password: ${{ secrets.DOCKERTOKEN }}
           username: ${{ secrets.DOCKERUSERNAME }}
-          password: ${{ secrets.DOCKERTOKEN }}
+          password: ${{ secrets.DCKRPAT }}
 
       - name: Prepare build context
         run: |
