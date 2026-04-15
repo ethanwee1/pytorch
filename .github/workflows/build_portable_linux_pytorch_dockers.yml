@@ -374,7 +374,7 @@ jobs:
 
       - name: Prepare build context
         run: |
-          cp dockerfiles/pytorch_runtime.Dockerfile pytorch-src/
+          cp dockerfiles/Dockerfile pytorch-src/
           mkdir -p pytorch-src/.github/scripts
           cp .github/scripts/install_rocm_deps.sh pytorch-src/.github/scripts/
           cp .github/scripts/install_pytorch_wheels.py pytorch-src/.github/scripts/
@@ -384,12 +384,8 @@ jobs:
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.docker-tag.outputs.tag }}"
 
           docker build \
-            --file pytorch-src/pytorch_runtime.Dockerfile \
+            --file pytorch-src/Dockerfile \
             --tag "${IMAGE}" \
-            --label "org.opencontainers.image.title=PyTorch ROCm" \
-            --label "org.opencontainers.image.description=PyTorch with ROCm runtime" \
-            --label "rocm.version=${{ steps.cfg.outputs.rocm_version }}" \
-            --label "amdgpu.family=${{ steps.cfg.outputs.amdgpu_family }}" \
             --label "pytorch.repo=${{ steps.cfg.outputs.pytorch_repo }}" \
             --label "pytorch.branch=${{ steps.cfg.outputs.pytorch_branch }}" \
             --label "pytorch.commit=${{ steps.cfg.outputs.pytorch_commit }}" \
