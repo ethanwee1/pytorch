@@ -3,7 +3,15 @@
 # Runtime note:
 # - This is a user-space ROCm runtime image with PyTorch. It does NOT include kernel drivers.
 # - Host must provide compatible AMDGPU/ROCm kernel components and device access (e.g., --device=/dev/kfd --device=/dev/dri).
-# - Typical run flags: --device=/dev/kfd --device=/dev/dri (and often appropriate group/permission settings).
+#
+# Recommended docker run flags (mirrors TheRock CI container options):
+#   docker run \
+#     --shm-size=10g \
+#     --cap-add=SYS_PTRACE \
+#     --group-add video \
+#     --device /dev/kfd \
+#     --device /dev/dri \
+#     <image>
 #
 # Supported base images (examples)
 # - ubuntu:24.04
@@ -55,14 +63,6 @@ ARG TORCH_VERSION_PREFIX
 ARG TORCHAUDIO_VERSION
 ARG TORCHVISION_VERSION
 ARG TRITON_VERSION
-ENV ROCM_HOME="/opt/venv/lib/python${PYTHON_VERSION}/site-packages/_rocm_sdk_devel" \
-    ROCM_BIN="/opt/venv/lib/python${PYTHON_VERSION}/site-packages/_rocm_sdk_devel/bin" \
-    ROCM_CMAKE_PREFIX="/opt/venv/lib/python${PYTHON_VERSION}/site-packages/_rocm_sdk_devel/lib/cmake" \
-    ROCM_PATH="/opt/venv/lib/python${PYTHON_VERSION}/site-packages/_rocm_sdk_devel" \
-    ROCM_SOURCE_DIR="/opt/venv/lib/python${PYTHON_VERSION}/site-packages/_rocm_sdk_devel" \
-    PYTORCH_ROCM_ARCH="${AMDGPU_FAMILY}"
-
-ENV LD_LIBRARY_PATH="${ROCM_HOME}/lib:${ROCM_HOME}/lib/rocm_sysdeps/lib:${LD_LIBRARY_PATH}"
 
 LABEL image.title="PyTorch + ROCm runtime image" \
     image.version="${ROCM_VERSION}" \
@@ -118,11 +118,39 @@ RUN /opt/venv/bin/python /tmp/install_pytorch_wheels.py \
 # Run rocm-sdk init to make rocm buildable
 RUN rocm-sdk init
 
-# Verify PyTorch imports after ROCm SDK is initialized
-RUN /opt/venv/bin/python <<'PYEOF'
-import torch
+# ROCm environment variables (mirrors TheRock CI setup in
+# test_pytorch_wheels_full.yml "Initialize ROCm SDK and configure environment").
+# All paths derive from ROCM_HOME which is the rocm-sdk install location.
+ENV ROCM_HOME="/opt/venv/lib/python${PYTHON_VERSION}/site-packages/_rocm_sdk_devel" \
+    ROCM_PATH="/opt/venv/lib/python${PYTHON_VERSION}/site-packages/_rocm_sdk_devel" \
+    ROCM_SOURCE_DIR="/opt/venv/lib/python${PYTHON_VERSION}/site-packages/_rocm_sdk_devel" \
+    ROCM_BIN="/opt/venv/lib/python${PYTHON_VERSION}/site-packages/_rocm_sdk_devel/bin" \
+    ROCM_CMAKE="/opt/venv/lib/python${PYTHON_VERSION}/site-packages/_rocm_sdk_devel/lib/cmake" \
+    PYTORCH_ROCM_ARCH="${AMDGPU_FAMILY}" \
+    VIRTUAL_ENV=/opt/venv \
+    USE_MSLK=0
+
+ENV CMAKE_PREFIX_PATH="${ROCM_CMAKE}:${CMAKE_PREFIX_PATH:-}" \
+    HIP_DEVICE_LIB_PATH="${ROCM_HOME}/lib/llvm/amdgcn/bitcode" \
+    ROCM_DEVICE_LIB_PATH="${ROCM_HOME}/lib/llvm/amdgcn/bitcode" \
+    ROCM_SYSDEPS_INCLUDE="${ROCM_HOME}/lib/rocm_sysdeps/include" \
+    CPLUS_INCLUDE_PATH="${ROCM_HOME}/lib/rocm_sysdeps/include:${CPLUS_INCLUDE_PATH:-}" \
+    C_INCLUDE_PATH="${ROCM_HOME}/lib/rocm_sysdeps/include:${C_INCLUDE_PATH:-}" \
+    PKG_CONFIG_PATH="${ROCM_HOME}/lib/rocm_sysdeps/lib/pkgconfig:${PKG_CONFIG_PATH:-}" \
+    LD_LIBRARY_PATH="${ROCM_HOME}/lib/host-math/lib:${ROCM_HOME}/lib/rocm_sysdeps/lib:${LD_LIBRARY_PATH:-}" \
+    LIBRARY_PATH="${ROCM_HOME}/lib/host-math/lib:${ROCM_HOME}/lib/rocm_sysdeps/lib:${LIBRARY_PATH:-}" \
+    CC="${ROCM_HOME}/lib/llvm/bin/clang" \
+    CXX="${ROCM_HOME}/lib/llvm/bin/clang++" \
+    PATH="${ROCM_BIN}:${PATH}"
+
+# Verify PyTorch imports and environment
+RUN python <<'PYEOF'
+import os, torch
 print('torch', torch.__version__)
 print('ROCm/HIP', torch.version.hip)
+print(f'ROCM_HOME={os.environ.get("ROCM_HOME", "NOT SET")}')
+print(f'CC={os.environ.get("CC", "NOT SET")}')
+print(f'CXX={os.environ.get("CXX", "NOT SET")}')
 for mod in ['torchaudio', 'torchvision', 'triton']:
     try:
         m = __import__(mod)
@@ -133,7 +161,5 @@ PYEOF
 
 # Clean up installation scripts
 RUN rm -f /tmp/install_rocm_deps.sh /tmp/install_pytorch_wheels.py
-
-ENV VIRTUAL_ENV=/opt/venv
 
 WORKDIR /workspace/pytorch
