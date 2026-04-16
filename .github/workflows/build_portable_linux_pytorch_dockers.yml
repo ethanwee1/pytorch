@@ -33,7 +33,7 @@ on:
           - gfx110X-dgpu
           - gfx103X-dgpu
           - gfx101X-dgpu
-        default: gfx950-dcgpu
+        default: gfx94X-dcgpu
       rocm_version:
         description: "ROCm version (e.g. '7.13.0a20260413'). Leave empty to auto-discover from the latest available torch wheel."
         type: string
