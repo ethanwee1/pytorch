@@ -56,6 +56,10 @@ LOG_FILE_MAP = {
     "rocm": ("rocm", "default"),
     "rocm_dist": ("rocm", "distributed"),
     "rocm_inductor": ("rocm", "inductor"),
+    "cuda": ("cuda", "default"),
+    "cuda_dist": ("cuda", "distributed"),
+    "cuda_inductor": ("cuda", "inductor"),
+    "baseline": ("baseline", "default"),
 }
 
 
@@ -191,7 +195,11 @@ def parse_log_file(filepath):
 
             m = RE_FAILED_CONSISTENTLY.search(stripped)
             if m:
-                consistent_failures.append(m.group("test_path"))
+                shard_str = ""
+                if active and active in results:
+                    info = results[active]
+                    shard_str = f"{info['shard']}/{info['total']}"
+                consistent_failures.append((m.group("test_path"), shard_str))
 
             if active and active in results:
                 for pattern, label in CRASH_PATTERNS:
@@ -268,7 +276,7 @@ def scan_logs(logs_dir):
                 "exit_codes": ",".join(str(c) for c in info["exit_codes"]),
             })
 
-        for test_path in consistent_failures:
+        for test_path, shard_str in consistent_failures:
             parts = test_path.split("::")
             file_part = parts[0].replace("test/", "").replace(".py", "")
             test_class = parts[1] if len(parts) > 1 else ""
@@ -279,7 +287,7 @@ def scan_logs(logs_dir):
                 "platform": platform,
                 "test_config": test_config,
                 "test_file": file_part,
-                "shard": "",
+                "shard": shard_str,
                 "status": "FAILED_CONSISTENTLY",
                 "category": "CONSISTENT_FAILURE",
                 "reason": f"{test_class}::{test_name}" if test_class else "",
