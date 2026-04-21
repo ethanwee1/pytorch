@@ -214,6 +214,19 @@ def scan_logs(logs_dir):
     """Scan all log files and return all non-passing test file results."""
     all_failures = []
 
+    # Pre-compute job-level shard totals per (platform, test_config) by
+    # counting how many log files belong to each group. Log files are
+    # 1-indexed (e.g. rocm1.txt..rocm6.txt for a 6-way sharded job), so
+    # the count == total shards for that CI job.
+    shard_totals = defaultdict(int)
+    for fname in os.listdir(logs_dir):
+        if not fname.endswith(".txt"):
+            continue
+        platform, test_config, shard_num = classify_log_file(fname)
+        if platform is None:
+            continue
+        shard_totals[(platform, test_config)] += 1
+
     for fname in sorted(os.listdir(logs_dir)):
         if not fname.endswith(".txt"):
             continue
@@ -221,6 +234,9 @@ def scan_logs(logs_dir):
         platform, test_config, shard_num = classify_log_file(fname)
         if platform is None:
             continue
+
+        job_total = shard_totals.get((platform, test_config), 0)
+        job_shard_str = f"{shard_num}/{job_total}" if job_total else str(shard_num)
 
         filepath = os.path.join(logs_dir, fname)
         results, consistent_failures = parse_log_file(filepath)
@@ -269,7 +285,8 @@ def scan_logs(logs_dir):
                 "platform": platform,
                 "test_config": test_config,
                 "test_file": info["test_file"],
-                "shard": f"{info['shard']}/{info['total']}",
+                "job_shard": job_shard_str,
+                "test_shard": f"{info['shard']}/{info['total']}",
                 "status": info["status"],
                 "category": "+".join(categories),
                 "reason": reason,
@@ -287,7 +304,8 @@ def scan_logs(logs_dir):
                 "platform": platform,
                 "test_config": test_config,
                 "test_file": file_part,
-                "shard": shard_str,
+                "job_shard": job_shard_str,
+                "test_shard": shard_str,
                 "status": "FAILED_CONSISTENTLY",
                 "category": "CONSISTENT_FAILURE",
                 "reason": f"{test_class}::{test_name}" if test_class else "",
@@ -299,7 +317,8 @@ def scan_logs(logs_dir):
 
 def write_csv_report(failures, output_path):
     fieldnames = [
-        "log_file", "platform", "test_config", "test_file", "shard",
+        "log_file", "platform", "test_config", "test_file",
+        "job_shard", "test_shard",
         "status", "category", "reason", "exit_codes",
     ]
     with open(output_path, "w", newline="") as f:

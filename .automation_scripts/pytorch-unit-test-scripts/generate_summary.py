@@ -425,9 +425,9 @@ def write_csv(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_na
     if s1_failed:
         csv_rows.append(['FAILED TESTS'])
         header = ['Arch', 'Test Config', 'Test File', 'Test Class',
-                  'Test Name', f'Shard ({s1_name})']
+                  'Test Name', f'Job-Level Shard ({s1_name})']
         if has_set2:
-            header.append(f'Shard ({s2_name})')
+            header.append(f'Job-Level Shard ({s2_name})')
         header.append(f'Status ({s1_name})')
         if has_set2:
             header.append(f'Status ({s2_name})')
@@ -451,13 +451,16 @@ def write_csv(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_na
         if rocm_log_failures:
             csv_rows.append(['LOG-BASED FAILURES (not in XML)'])
             csv_rows.append(['Arch', 'Platform', 'Test Config', 'Test File', 'Test Class',
-                             'Test Name', 'Shard', 'Category', 'Also Failing In', 'Log File'])
+                             'Test Name', 'Job-Level Shard', 'Test-Level Shard',
+                             'Category', 'Also Failing In', 'Log File'])
             for lf in rocm_log_failures:
                 test_class, test_name = _parse_log_failure_names(lf)
                 csv_rows.append([
                     lf.get('arch', ''), lf.get('platform', ''), lf.get('test_config', ''),
                     lf.get('test_file', ''), test_class, test_name,
-                    lf.get('shard', ''), lf.get('category', ''),
+                    lf.get('job_shard', ''),
+                    lf.get('test_shard', lf.get('shard', '')),
+                    lf.get('category', ''),
                     lf.get('also_failing_in', ''),
                     lf.get('log_file', ''),
                 ])
@@ -502,9 +505,9 @@ def write_markdown(rows, archs, output_path, failed_tests=None, s1_name='set1', 
     s1_failed = [t for t in (failed_tests or []) if t.get(f'status_{s1_name}') == 'FAILED']
 
     cols = ['Arch', 'Test Config', 'Test File', 'Test Class', 'Test Name',
-            f'Shard ({s1_name})']
+            f'Job-Level Shard ({s1_name})']
     if has_set2:
-        cols.append(f'Shard ({s2_name})')
+        cols.append(f'Job-Level Shard ({s2_name})')
     cols.append(f'Status ({s1_name})')
     if has_set2:
         cols.append(f'Status ({s2_name})')
@@ -541,14 +544,16 @@ def write_markdown(rows, archs, output_path, failed_tests=None, s1_name='set1', 
             lines.append('These test failures were detected from CI log files but have no XML report')
             lines.append('(typically due to timeouts, crashes, or process kills).')
             lines.append('')
-            lines.append('| Arch | Platform | Test Config | Test File | Test Class | Test Name | Shard | Category | Also Failing In |')
-            lines.append('| --- | --- | --- | --- | --- | --- | --- | --- | --- |')
+            lines.append('| Arch | Platform | Test Config | Test File | Test Class | Test Name | Job-Level Shard | Test-Level Shard | Category | Also Failing In |')
+            lines.append('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |')
             for lf in rocm_log_failures:
                 test_class, test_name = _parse_log_failure_names(lf)
                 lines.append(
                     f"| {lf.get('arch', '')} | {lf.get('platform', '')} | {lf.get('test_config', '')} "
                     f"| {lf.get('test_file', '')} | {test_class} "
-                    f"| {test_name} | {lf.get('shard', '')} "
+                    f"| {test_name} "
+                    f"| {lf.get('job_shard', '')} "
+                    f"| {lf.get('test_shard', lf.get('shard', ''))} "
                     f"| {lf.get('category', '')} "
                     f"| {lf.get('also_failing_in', '')} |"
                 )
