@@ -211,8 +211,17 @@ def parse_log_file(filepath):
 
 
 def scan_logs(logs_dir):
-    """Scan all log files and return all non-passing test file results."""
+    """Scan all log files and return non-passing test file results plus a
+    test-level shard inventory.
+
+    Returns (all_failures, shard_inventory) where shard_inventory is a list
+    of dicts with one entry per (platform, test_config, job_shard, test_file)
+    combination seen in the logs, plus a sorted comma-separated list of the
+    test-level shards observed (e.g. "1/1" or "1/15,2/15,...,15/15"). This
+    lets downstream consumers look up the test-level shard for any XML-based
+    failure whose only shard info is the job-level shard."""
     all_failures = []
+    shard_map = defaultdict(set)
 
     # Pre-compute job-level shard totals per (platform, test_config) by
     # counting how many log files belong to each group. Log files are
@@ -240,6 +249,13 @@ def scan_logs(logs_dir):
 
         filepath = os.path.join(logs_dir, fname)
         results, consistent_failures = parse_log_file(filepath)
+
+        # Record every (test_file, test_shard) observed in this log file,
+        # including PASSED ones, so the inventory covers the full run.
+        for info in results.values():
+            shard_map[(platform, test_config, job_shard_str, info["test_file"])].add(
+                f"{info['shard']}/{info['total']}"
+            )
 
         for key, info in results.items():
             if info["status"] == "PASSED":
@@ -312,7 +328,29 @@ def scan_logs(logs_dir):
                 "exit_codes": "",
             })
 
-    return all_failures
+    def _sort_shards(vals):
+        def key(v):
+            try:
+                a, b = v.split("/", 1)
+                return (int(b), int(a))
+            except (ValueError, AttributeError):
+                return (0, 0)
+        return sorted(vals, key=key)
+
+    shard_inventory = [
+        {
+            "platform": platform,
+            "test_config": test_config,
+            "job_shard": job_shard_str,
+            "test_file": test_file,
+            "test_shards": ",".join(_sort_shards(shards)),
+        }
+        for (platform, test_config, job_shard_str, test_file), shards in shard_map.items()
+    ]
+    shard_inventory.sort(key=lambda r: (r["platform"], r["test_config"],
+                                        r["job_shard"], r["test_file"]))
+
+    return all_failures, shard_inventory
 
 
 def write_csv_report(failures, output_path):
@@ -326,6 +364,26 @@ def write_csv_report(failures, output_path):
         writer.writeheader()
         writer.writerows(failures)
     print(f"Log failure report: {output_path} ({len(failures)} entries)")
+
+
+def write_shards_report(inventory, output_path):
+    fieldnames = ["platform", "test_config", "job_shard", "test_file", "test_shards"]
+    with open(output_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(inventory)
+    print(f"Log shard inventory: {output_path} ({len(inventory)} entries)")
+
+
+def _derive_shards_path(output_path):
+    """Given an output path like '.../log_failures_mi355.csv', return
+    '.../log_shards_mi355.csv'. Falls back to appending '.shards.csv' if
+    the expected prefix isn't present."""
+    d, base = os.path.split(output_path)
+    if base.startswith("log_failures"):
+        return os.path.join(d, "log_shards" + base[len("log_failures"):])
+    stem, ext = os.path.splitext(base)
+    return os.path.join(d, f"{stem}.shards{ext or '.csv'}")
 
 
 def print_summary(failures):
@@ -366,9 +424,10 @@ def main():
     )
     args = parser.parse_args()
 
-    failures = scan_logs(args.logs_dir)
+    failures, shard_inventory = scan_logs(args.logs_dir)
     print_summary(failures)
     write_csv_report(failures, args.output)
+    write_shards_report(shard_inventory, _derive_shards_path(args.output))
     return 0 if not failures else 1
 
 

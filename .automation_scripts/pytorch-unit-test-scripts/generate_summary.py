@@ -345,6 +345,68 @@ def load_log_failures(filepaths):
     return entries
 
 
+def load_log_shards(filepaths):
+    """Load log shard inventory CSVs written alongside log_failures files.
+
+    For each log_failures_<arch>.csv, looks for a sibling log_shards_<arch>.csv
+    and returns a lookup dict:
+        (arch, platform, test_config, job_shard, normalized_test_file) -> test_shards_str
+
+    The CSV is produced by detect_log_failures.py and records every
+    (test_file, test_shard) pair observed per job-level shard. If an XML-based
+    failure's key matches, we can back-fill the test-level shard value.
+    """
+    lookup = {}
+    for fp in filepaths:
+        if not fp:
+            continue
+        basename = os.path.basename(fp)
+        arch = ''
+        if basename.startswith('log_failures_') and basename.endswith('.csv'):
+            arch = basename[len('log_failures_'):-len('.csv')]
+            shards_path = os.path.join(
+                os.path.dirname(fp),
+                'log_shards_' + basename[len('log_failures_'):],
+            )
+        else:
+            continue
+        if not os.path.isfile(shards_path):
+            continue
+        with open(shards_path, newline='') as f:
+            for row in csv.DictReader(f):
+                key = (arch, row.get('platform', ''), row.get('test_config', ''),
+                       row.get('job_shard', ''),
+                       _norm_test_file(row.get('test_file', '')))
+                lookup[key] = row.get('test_shards', '')
+    return lookup
+
+
+def _format_test_shards(shards_str):
+    """Collapse a test_shards inventory string into a compact display value.
+
+    - '' -> ''
+    - '1/1' -> '1/1'
+    - '3/14' -> '3/14'
+    - '1/14,6/14,12/14' -> '1,6,12/14' (multiple test-level shards observed)
+    - mixed totals fall back to the raw string."""
+    if not shards_str:
+        return ''
+    parts = [p for p in shards_str.split(',') if p]
+    if len(parts) == 1:
+        return parts[0]
+    totals = set()
+    nums = []
+    for p in parts:
+        if '/' not in p:
+            return shards_str
+        a, b = p.split('/', 1)
+        totals.add(b)
+        nums.append(a)
+    if len(totals) == 1:
+        return f"{','.join(nums)}/{totals.pop()}"
+    return shards_str
+
+
 def fmt_val(v):
     if isinstance(v, int):
         return f'{v:,}'
@@ -418,7 +480,7 @@ def _parse_log_failure_names(lf):
     return parts[0], parts[1]
 
 
-def write_csv(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_name='set2', has_set2=True, log_failures=None):
+def write_csv(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_name='set2', has_set2=True, log_failures=None, shard_lookup=None):
     csv_rows = []
     csv_rows.append([''] + list(archs))
     for label, vals in rows:
@@ -433,12 +495,23 @@ def write_csv(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_na
 
     s1_failed = [t for t in (failed_tests or []) if t.get(f'status_{s1_name}') == 'FAILED']
 
+    shard_lookup = shard_lookup or {}
+
+    def _xml_test_shard(t, platform):
+        key = (t.get('arch', ''), platform, t.get('test_config', ''),
+               t.get(f'shard_{platform}', ''),
+               _norm_test_file(t.get('test_file', '')))
+        return _format_test_shards(shard_lookup.get(key, ''))
+
     if s1_failed:
         csv_rows.append(['FAILED TESTS'])
         header = ['Arch', 'Test Config', 'Test File', 'Test Class',
-                  'Test Name', f'Job-Level Shard ({s1_name})']
+                  'Test Name',
+                  f'Job-Level Shard ({s1_name})',
+                  f'Test-Level Shard ({s1_name})']
         if has_set2:
             header.append(f'Job-Level Shard ({s2_name})')
+            header.append(f'Test-Level Shard ({s2_name})')
         header.append(f'Status ({s1_name})')
         if has_set2:
             header.append(f'Status ({s2_name})')
@@ -447,9 +520,11 @@ def write_csv(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_na
         for t in s1_failed:
             row = [t['arch'], t['test_config'], t['test_file'],
                    t['test_class'], t['test_name'],
-                   t.get(f'shard_{s1_name}', '')]
+                   t.get(f'shard_{s1_name}', ''),
+                   _xml_test_shard(t, s1_name)]
             if has_set2:
                 row.append(t.get(f'shard_{s2_name}', ''))
+                row.append(_xml_test_shard(t, s2_name))
             row.append(t[f'status_{s1_name}'])
             if has_set2:
                 row.append(t.get(f'status_{s2_name}', ''))
@@ -495,7 +570,7 @@ def write_csv(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_na
     print(f'CSV written to {output_path}')
 
 
-def write_markdown(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_name='set2', has_set2=True, log_failures=None):
+def write_markdown(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_name='set2', has_set2=True, log_failures=None, shard_lookup=None):
     lines = []
     current_section = []
 
@@ -528,10 +603,20 @@ def write_markdown(rows, archs, output_path, failed_tests=None, s1_name='set1', 
 
     s1_failed = [t for t in (failed_tests or []) if t.get(f'status_{s1_name}') == 'FAILED']
 
+    shard_lookup = shard_lookup or {}
+
+    def _xml_test_shard(t, platform):
+        key = (t.get('arch', ''), platform, t.get('test_config', ''),
+               t.get(f'shard_{platform}', ''),
+               _norm_test_file(t.get('test_file', '')))
+        return _format_test_shards(shard_lookup.get(key, ''))
+
     cols = ['Arch', 'Test Config', 'Test File', 'Test Class', 'Test Name',
-            f'Job-Level Shard ({s1_name})']
+            f'Job-Level Shard ({s1_name})',
+            f'Test-Level Shard ({s1_name})']
     if has_set2:
         cols.append(f'Job-Level Shard ({s2_name})')
+        cols.append(f'Test-Level Shard ({s2_name})')
     cols.append(f'Status ({s1_name})')
     if has_set2:
         cols.append(f'Status ({s2_name})')
@@ -545,9 +630,11 @@ def write_markdown(rows, archs, output_path, failed_tests=None, s1_name='set1', 
         for t in s1_failed:
             line = (f"| {t['arch']} | {t['test_config']} | {t['test_file']} "
                     f"| {t['test_class']} | {t['test_name']} "
-                    f"| {t.get(f'shard_{s1_name}', '')}")
+                    f"| {t.get(f'shard_{s1_name}', '')} "
+                    f"| {_xml_test_shard(t, s1_name)}")
             if has_set2:
                 line += f" | {t.get(f'shard_{s2_name}', '')}"
+                line += f" | {_xml_test_shard(t, s2_name)}"
             line += f" | {t[f'status_{s1_name}']}"
             if has_set2:
                 line += f" | {t.get(f'status_{s2_name}', '')}"
@@ -624,6 +711,7 @@ def main():
     failed = collect_failed_tests(arch_data, archs, args.set1_name, args.set2_name)
     any_has_set2 = any(d.get('has_set2', True) for d in arch_data.values())
     log_failures = load_log_failures(args.log_failures) if args.log_failures else []
+    shard_lookup = load_log_shards(args.log_failures) if args.log_failures else {}
 
     _add_cross_arch_info(failed, log_failures, args.set2_name)
     _add_log_failure_cross_arch(log_failures, failed, args.set1_name, args.set2_name)
@@ -632,8 +720,8 @@ def main():
     if output_base.endswith('.csv') or output_base.endswith('.md'):
         output_base = output_base.rsplit('.', 1)[0]
 
-    write_csv(data_rows, archs, f'{output_base}.csv', failed, args.set1_name, args.set2_name, has_set2=any_has_set2, log_failures=log_failures)
-    write_markdown(data_rows, archs, f'{output_base}.md', failed, args.set1_name, args.set2_name, has_set2=any_has_set2, log_failures=log_failures)
+    write_csv(data_rows, archs, f'{output_base}.csv', failed, args.set1_name, args.set2_name, has_set2=any_has_set2, log_failures=log_failures, shard_lookup=shard_lookup)
+    write_markdown(data_rows, archs, f'{output_base}.md', failed, args.set1_name, args.set2_name, has_set2=any_has_set2, log_failures=log_failures, shard_lookup=shard_lookup)
 
 
 if __name__ == '__main__':
