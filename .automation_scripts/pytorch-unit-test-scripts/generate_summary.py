@@ -393,6 +393,17 @@ def build_rows(args, archs, arch_data):
     return out
 
 
+def _norm_test_file(path):
+    """Normalize a test_file string so XML-sourced ('a.b.c') and log-sourced
+    ('a/b/c') forms compare equal. Also strips a trailing .py if present."""
+    if not path:
+        return ''
+    s = path.replace('/', '.')
+    if s.endswith('.py'):
+        s = s[:-3]
+    return s
+
+
 def _parse_log_failure_names(lf):
     """Extract test_class and test_name from a log failure's reason field.
 
@@ -447,7 +458,20 @@ def write_csv(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_na
         csv_rows.append([])
 
     if log_failures:
-        rocm_log_failures = [lf for lf in log_failures if lf.get('platform', '') == s1_name]
+        xml_failed_keys = {
+            (t['arch'], _norm_test_file(t['test_file']), t['test_class'], t['test_name'])
+            for t in (failed_tests or [])
+        }
+        rocm_log_failures = []
+        for lf in log_failures:
+            if lf.get('platform', '') != s1_name:
+                continue
+            test_class, test_name = _parse_log_failure_names(lf)
+            key = (lf.get('arch', ''), _norm_test_file(lf.get('test_file', '')),
+                   test_class, test_name)
+            if key in xml_failed_keys:
+                continue
+            rocm_log_failures.append(lf)
         if rocm_log_failures:
             csv_rows.append(['LOG-BASED FAILURES (not in XML)'])
             csv_rows.append(['Arch', 'Platform', 'Test Config', 'Test File', 'Test Class',
@@ -537,7 +561,20 @@ def write_markdown(rows, archs, output_path, failed_tests=None, s1_name='set1', 
         lines.append('')
 
     if log_failures:
-        rocm_log_failures = [lf for lf in log_failures if lf.get('platform', '') == s1_name]
+        xml_failed_keys = {
+            (t['arch'], _norm_test_file(t['test_file']), t['test_class'], t['test_name'])
+            for t in (failed_tests or [])
+        }
+        rocm_log_failures = []
+        for lf in log_failures:
+            if lf.get('platform', '') != s1_name:
+                continue
+            test_class, test_name = _parse_log_failure_names(lf)
+            key = (lf.get('arch', ''), _norm_test_file(lf.get('test_file', '')),
+                   test_class, test_name)
+            if key in xml_failed_keys:
+                continue
+            rocm_log_failures.append(lf)
         if rocm_log_failures:
             lines.append(f'### LOG-BASED FAILURES (not in XML) ({len(rocm_log_failures)})')
             lines.append('')
