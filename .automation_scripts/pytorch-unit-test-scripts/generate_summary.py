@@ -345,6 +345,48 @@ def load_log_failures(filepaths):
     return entries
 
 
+def load_flaky_tests_as_log_failures(filepaths):
+    """Load flaky_tests_<arch>.csv and return entries shaped like log-failure rows.
+
+    Each returned dict has the same schema as the entries produced by
+    load_log_failures, with category='FLAKY' and reason='<test_class>::<test_name>',
+    so they can be appended to the log_failures list and surfaced in the
+    LOG-BASED FAILURES table alongside crashes/timeouts/etc.
+    """
+    entries = []
+    for fp in filepaths or []:
+        if not fp:
+            continue
+        basename = os.path.basename(fp)
+        if not (basename.startswith('log_failures_') and basename.endswith('.csv')):
+            continue
+        arch = basename[len('log_failures_'):-len('.csv')]
+        flaky_path = os.path.join(
+            os.path.dirname(fp),
+            'flaky_tests_' + basename[len('log_failures_'):],
+        )
+        if not os.path.isfile(flaky_path):
+            continue
+        with open(flaky_path, newline='') as f:
+            for row in csv.DictReader(f):
+                test_class = row.get('test_class', '')
+                test_name = row.get('test_name', '')
+                entries.append({
+                    'arch': arch,
+                    'log_file': row.get('log_file', ''),
+                    'platform': row.get('platform', ''),
+                    'test_config': row.get('test_config', ''),
+                    'test_file': row.get('test_file', ''),
+                    'job_shard': row.get('job_shard', ''),
+                    'test_shard': row.get('test_shard', ''),
+                    'status': 'FLAKY',
+                    'category': 'FLAKY',
+                    'reason': f'{test_class}::{test_name}' if test_class else test_name,
+                    'exit_codes': '',
+                })
+    return entries
+
+
 def load_log_shards(filepaths):
     """Load log shard inventory CSVs written alongside log_failures files.
 
@@ -544,7 +586,10 @@ def write_csv(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_na
             test_class, test_name = _parse_log_failure_names(lf)
             key = (lf.get('arch', ''), _norm_test_file(lf.get('test_file', '')),
                    test_class, test_name)
-            if key in xml_failed_keys:
+            # Skip entries already present in the XML-based FAILED TESTS table
+            # to avoid double-counting the same failure, except for FLAKY
+            # entries which represent an independent signal (a rerun passed).
+            if key in xml_failed_keys and lf.get('category', '') != 'FLAKY':
                 continue
             rocm_log_failures.append(lf)
         if rocm_log_failures:
@@ -659,7 +704,7 @@ def write_markdown(rows, archs, output_path, failed_tests=None, s1_name='set1', 
             test_class, test_name = _parse_log_failure_names(lf)
             key = (lf.get('arch', ''), _norm_test_file(lf.get('test_file', '')),
                    test_class, test_name)
-            if key in xml_failed_keys:
+            if key in xml_failed_keys and lf.get('category', '') != 'FLAKY':
                 continue
             rocm_log_failures.append(lf)
         if rocm_log_failures:
@@ -711,6 +756,8 @@ def main():
     failed = collect_failed_tests(arch_data, archs, args.set1_name, args.set2_name)
     any_has_set2 = any(d.get('has_set2', True) for d in arch_data.values())
     log_failures = load_log_failures(args.log_failures) if args.log_failures else []
+    if args.log_failures:
+        log_failures.extend(load_flaky_tests_as_log_failures(args.log_failures))
     shard_lookup = load_log_shards(args.log_failures) if args.log_failures else {}
 
     _add_cross_arch_info(failed, log_failures, args.set2_name)
