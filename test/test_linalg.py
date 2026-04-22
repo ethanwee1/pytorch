@@ -2271,6 +2271,7 @@ class TestLinalg(TestCase):
         # check correctness using eigendecomposition identity
         self.assertEqual(a.to(v.dtype) @ v, w * v, atol=1e-3, rtol=1e-3)
 
+    @skipCUDAIf(TEST_WITH_ROCM and not torch.cuda.has_magma, "ROCm hipsolver backend does not currently support eig")
     @onlyCUDA
     @dtypes(torch.float32, torch.float64)
     def test_eig_cuda_complex_eigenvectors(self, device, dtype):
@@ -7047,10 +7048,10 @@ class TestLinalg(TestCase):
     @skipCPUIfNoLapack
     @dtypes(torch.double)
     def test_lobpcg_ortho(self, device, dtype):
-        if torch.version.hip:
+        if torch.version.hip and torch.cuda.has_magma:
             torch.backends.cuda.preferred_linalg_library('magma')
         self._test_lobpcg_method(device, dtype, 'ortho')
-        if torch.version.hip:
+        if torch.version.hip and torch.cuda.has_magma:
             torch.backends.cuda.preferred_linalg_library('default')
 
     def _test_lobpcg_method(self, device, dtype, method):
