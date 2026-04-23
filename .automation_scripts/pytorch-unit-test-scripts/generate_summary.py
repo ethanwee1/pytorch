@@ -231,7 +231,13 @@ def compute_overall_stats(rows, s1_col, s2_col, s1_time_col, s2_time_col, s1_nam
 
 
 def collect_failed_tests(arch_data, archs, s1_name, s2_name):
-    """Return a list of failed test rows across all architectures."""
+    """Return a list of failed test rows across all architectures.
+
+    Only collects tests where s1 (ROCm) is FAILED. Each entry records shards
+    for both s1 and s2 so the reviewer can look up the failure in either CI
+    job. 'also_failing_in' is populated later once log failures are known so
+    CUDA log-only failures can be included.
+    """
     failed = []
     for arch in archs:
         d = arch_data[arch]
@@ -240,21 +246,83 @@ def collect_failed_tests(arch_data, archs, s1_name, s2_name):
         for r in d['rows']:
             s1 = r[s1_col].strip()
             s2 = r[s2_col].strip() if has_set2 else ''
-            if s1 == 'FAILED' or s2 == 'FAILED':
-                shard = r.get(f'shard_{s1_name}', '') if s1 == 'FAILED' else r.get(f'shard_{s2_name}', '')
+            if s1 == 'FAILED':
                 entry = {
                     'arch': arch,
                     'test_file': r.get('test_file', ''),
                     'test_class': r.get('test_class', ''),
                     'test_name': r.get('test_name', ''),
                     'test_config': r.get('test_config', ''),
-                    'shard': shard,
+                    f'shard_{s1_name}': r.get(f'shard_{s1_name}', ''),
                     f'status_{s1_name}': s1,
                 }
                 if has_set2:
+                    entry[f'shard_{s2_name}'] = r.get(f'shard_{s2_name}', '')
                     entry[f'status_{s2_name}'] = s2
                 failed.append(entry)
+
     return failed
+
+
+def _add_cross_arch_info(failed_tests, log_failures, s2_name):
+    """Populate 'also_failing_in' for each entry.
+
+    Matches across other ROCm architectures (from XML-based failures) and also
+    includes s2 (CUDA) if a log failure is recorded for the same test tuple.
+    """
+    from collections import defaultdict
+    by_tuple = defaultdict(set)
+    for t in failed_tests:
+        key = (t['test_file'], t['test_class'], t['test_name'])
+        by_tuple[key].add(t['arch'])
+
+    cuda_log_tuples = set()
+    for lf in log_failures or []:
+        if lf.get('platform', '') == s2_name:
+            test_class, test_name = _parse_log_failure_names(lf)
+            cuda_log_tuples.add((lf.get('test_file', ''), test_class, test_name))
+
+    for t in failed_tests:
+        key = (t['test_file'], t['test_class'], t['test_name'])
+        others = sorted(a for a in by_tuple[key] if a != t['arch'])
+        if key in cuda_log_tuples and s2_name not in others:
+            others.append(s2_name)
+        t['also_failing_in'] = ', '.join(others)
+
+
+def _add_log_failure_cross_arch(log_failures, failed_tests, s1_name, s2_name):
+    """Populate 'also_failing_in' for each log failure entry.
+
+    Cross-references: other archs that have the same test failing (either as
+    a log failure or as an XML-based failure), plus s2 (CUDA) if it appears
+    in log failures for the same test tuple.
+    """
+    from collections import defaultdict
+    by_tuple_archs = defaultdict(set)
+
+    for lf in log_failures or []:
+        if lf.get('platform', '') == s1_name:
+            test_class, test_name = _parse_log_failure_names(lf)
+            key = (lf.get('test_file', ''), test_class, test_name)
+            by_tuple_archs[key].add(lf.get('arch', ''))
+    for t in failed_tests or []:
+        key = (t['test_file'], t['test_class'], t['test_name'])
+        by_tuple_archs[key].add(t['arch'])
+
+    cuda_log_tuples = set()
+    for lf in log_failures or []:
+        if lf.get('platform', '') == s2_name:
+            test_class, test_name = _parse_log_failure_names(lf)
+            cuda_log_tuples.add((lf.get('test_file', ''), test_class, test_name))
+
+    for lf in log_failures or []:
+        test_class, test_name = _parse_log_failure_names(lf)
+        key = (lf.get('test_file', ''), test_class, test_name)
+        arch = lf.get('arch', '')
+        others = sorted(a for a in by_tuple_archs[key] if a and a != arch)
+        if key in cuda_log_tuples and s2_name not in others:
+            others.append(s2_name)
+        lf['also_failing_in'] = ', '.join(others)
 
 
 def load_log_failures(filepaths):
@@ -275,6 +343,110 @@ def load_log_failures(filepaths):
                 row['arch'] = arch
                 entries.append(row)
     return entries
+
+
+def load_flaky_tests_as_log_failures(filepaths):
+    """Load flaky_tests_<arch>.csv and return entries shaped like log-failure rows.
+
+    Each returned dict has the same schema as the entries produced by
+    load_log_failures, with category='FLAKY' and reason='<test_class>::<test_name>',
+    so they can be appended to the log_failures list and surfaced in the
+    LOG-BASED FAILURES table alongside crashes/timeouts/etc.
+    """
+    entries = []
+    for fp in filepaths or []:
+        if not fp:
+            continue
+        basename = os.path.basename(fp)
+        if not (basename.startswith('log_failures_') and basename.endswith('.csv')):
+            continue
+        arch = basename[len('log_failures_'):-len('.csv')]
+        flaky_path = os.path.join(
+            os.path.dirname(fp),
+            'flaky_tests_' + basename[len('log_failures_'):],
+        )
+        if not os.path.isfile(flaky_path):
+            continue
+        with open(flaky_path, newline='') as f:
+            for row in csv.DictReader(f):
+                test_class = row.get('test_class', '')
+                test_name = row.get('test_name', '')
+                entries.append({
+                    'arch': arch,
+                    'log_file': row.get('log_file', ''),
+                    'platform': row.get('platform', ''),
+                    'test_config': row.get('test_config', ''),
+                    'test_file': row.get('test_file', ''),
+                    'job_shard': row.get('job_shard', ''),
+                    'test_shard': row.get('test_shard', ''),
+                    'status': 'FLAKY',
+                    'category': 'FLAKY',
+                    'reason': f'{test_class}::{test_name}' if test_class else test_name,
+                    'exit_codes': '',
+                })
+    return entries
+
+
+def load_log_shards(filepaths):
+    """Load log shard inventory CSVs written alongside log_failures files.
+
+    For each log_failures_<arch>.csv, looks for a sibling log_shards_<arch>.csv
+    and returns a lookup dict:
+        (arch, platform, test_config, job_shard, normalized_test_file) -> test_shards_str
+
+    The CSV is produced by detect_log_failures.py and records every
+    (test_file, test_shard) pair observed per job-level shard. If an XML-based
+    failure's key matches, we can back-fill the test-level shard value.
+    """
+    lookup = {}
+    for fp in filepaths:
+        if not fp:
+            continue
+        basename = os.path.basename(fp)
+        arch = ''
+        if basename.startswith('log_failures_') and basename.endswith('.csv'):
+            arch = basename[len('log_failures_'):-len('.csv')]
+            shards_path = os.path.join(
+                os.path.dirname(fp),
+                'log_shards_' + basename[len('log_failures_'):],
+            )
+        else:
+            continue
+        if not os.path.isfile(shards_path):
+            continue
+        with open(shards_path, newline='') as f:
+            for row in csv.DictReader(f):
+                key = (arch, row.get('platform', ''), row.get('test_config', ''),
+                       row.get('job_shard', ''),
+                       _norm_test_file(row.get('test_file', '')))
+                lookup[key] = row.get('test_shards', '')
+    return lookup
+
+
+def _format_test_shards(shards_str):
+    """Collapse a test_shards inventory string into a compact display value.
+
+    - '' -> ''
+    - '1/1' -> '1/1'
+    - '3/14' -> '3/14'
+    - '1/14,6/14,12/14' -> '1,6,12/14' (multiple test-level shards observed)
+    - mixed totals fall back to the raw string."""
+    if not shards_str:
+        return ''
+    parts = [p for p in shards_str.split(',') if p]
+    if len(parts) == 1:
+        return parts[0]
+    totals = set()
+    nums = []
+    for p in parts:
+        if '/' not in p:
+            return shards_str
+        a, b = p.split('/', 1)
+        totals.add(b)
+        nums.append(a)
+    if len(totals) == 1:
+        return f"{','.join(nums)}/{totals.pop()}"
+    return shards_str
 
 
 def fmt_val(v):
@@ -325,6 +497,17 @@ def build_rows(args, archs, arch_data):
     return out
 
 
+def _norm_test_file(path):
+    """Normalize a test_file string so XML-sourced ('a.b.c') and log-sourced
+    ('a/b/c') forms compare equal. Also strips a trailing .py if present."""
+    if not path:
+        return ''
+    s = path.replace('/', '.')
+    if s.endswith('.py'):
+        s = s[:-3]
+    return s
+
+
 def _parse_log_failure_names(lf):
     """Extract test_class and test_name from a log failure's reason field.
 
@@ -339,7 +522,7 @@ def _parse_log_failure_names(lf):
     return parts[0], parts[1]
 
 
-def write_csv(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_name='set2', has_set2=True, log_failures=None):
+def write_csv(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_name='set2', has_set2=True, log_failures=None, shard_lookup=None):
     csv_rows = []
     csv_rows.append([''] + list(archs))
     for label, vals in rows:
@@ -352,41 +535,87 @@ def write_csv(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_na
             csv_rows.append([label] + list(vals))
     csv_rows.append([])
 
-    if failed_tests:
+    s1_failed = [t for t in (failed_tests or []) if t.get(f'status_{s1_name}') == 'FAILED']
+
+    shard_lookup = shard_lookup or {}
+
+    def _xml_test_shard(t, platform):
+        key = (t.get('arch', ''), platform, t.get('test_config', ''),
+               t.get(f'shard_{platform}', ''),
+               _norm_test_file(t.get('test_file', '')))
+        return _format_test_shards(shard_lookup.get(key, ''))
+
+    if s1_failed:
         csv_rows.append(['FAILED TESTS'])
         header = ['Arch', 'Test Config', 'Test File', 'Test Class',
-                  'Test Name', 'Shard', f'Status ({s1_name})']
+                  'Test Name',
+                  f'Job-Level Shard ({s1_name})',
+                  f'Test-Level Shard ({s1_name})']
+        if has_set2:
+            header.append(f'Job-Level Shard ({s2_name})')
+            header.append(f'Test-Level Shard ({s2_name})')
+        header.append(f'Status ({s1_name})')
         if has_set2:
             header.append(f'Status ({s2_name})')
+        header.append('Also Failing In')
         csv_rows.append(header)
-        for t in failed_tests:
+        for t in s1_failed:
             row = [t['arch'], t['test_config'], t['test_file'],
-                   t['test_class'], t['test_name'], t.get('shard', ''),
-                   t[f'status_{s1_name}']]
+                   t['test_class'], t['test_name'],
+                   t.get(f'shard_{s1_name}', ''),
+                   _xml_test_shard(t, s1_name)]
+            if has_set2:
+                row.append(t.get(f'shard_{s2_name}', ''))
+                row.append(_xml_test_shard(t, s2_name))
+            row.append(t[f'status_{s1_name}'])
             if has_set2:
                 row.append(t.get(f'status_{s2_name}', ''))
+            row.append(t.get('also_failing_in', ''))
             csv_rows.append(row)
         csv_rows.append([])
 
     if log_failures:
-        csv_rows.append(['LOG-BASED FAILURES (not in XML)'])
-        csv_rows.append(['Arch', 'Platform', 'Test Config', 'Test File', 'Test Class', 'Test Name', 'Shard', 'Category', 'Log File'])
+        xml_failed_keys = {
+            (t['arch'], _norm_test_file(t['test_file']), t['test_class'], t['test_name'])
+            for t in (failed_tests or [])
+        }
+        rocm_log_failures = []
         for lf in log_failures:
+            if lf.get('platform', '') != s1_name:
+                continue
             test_class, test_name = _parse_log_failure_names(lf)
-            csv_rows.append([
-                lf.get('arch', ''), lf.get('platform', ''), lf.get('test_config', ''),
-                lf.get('test_file', ''), test_class, test_name,
-                lf.get('shard', ''), lf.get('category', ''),
-                lf.get('log_file', ''),
-            ])
-        csv_rows.append([])
+            key = (lf.get('arch', ''), _norm_test_file(lf.get('test_file', '')),
+                   test_class, test_name)
+            # Skip entries already present in the XML-based FAILED TESTS table
+            # to avoid double-counting the same failure, except for FLAKY
+            # entries which represent an independent signal (a rerun passed).
+            if key in xml_failed_keys and lf.get('category', '') != 'FLAKY':
+                continue
+            rocm_log_failures.append(lf)
+        if rocm_log_failures:
+            csv_rows.append(['LOG-BASED FAILURES (not in XML)'])
+            csv_rows.append(['Arch', 'Platform', 'Test Config', 'Test File', 'Test Class',
+                             'Test Name', 'Job-Level Shard', 'Test-Level Shard',
+                             'Category', 'Also Failing In', 'Log File'])
+            for lf in rocm_log_failures:
+                test_class, test_name = _parse_log_failure_names(lf)
+                csv_rows.append([
+                    lf.get('arch', ''), lf.get('platform', ''), lf.get('test_config', ''),
+                    lf.get('test_file', ''), test_class, test_name,
+                    lf.get('job_shard', ''),
+                    lf.get('test_shard', lf.get('shard', '')),
+                    lf.get('category', ''),
+                    lf.get('also_failing_in', ''),
+                    lf.get('log_file', ''),
+                ])
+            csv_rows.append([])
 
     with open(output_path, 'w', newline='') as f:
         csv.writer(f).writerows(csv_rows)
     print(f'CSV written to {output_path}')
 
 
-def write_markdown(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_name='set2', has_set2=True, log_failures=None):
+def write_markdown(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_name='set2', has_set2=True, log_failures=None, shard_lookup=None):
     lines = []
     current_section = []
 
@@ -417,22 +646,44 @@ def write_markdown(rows, archs, output_path, failed_tests=None, s1_name='set1', 
 
     flush_table()
 
-    if failed_tests:
-        lines.append('### FAILED TESTS')
+    s1_failed = [t for t in (failed_tests or []) if t.get(f'status_{s1_name}') == 'FAILED']
+
+    shard_lookup = shard_lookup or {}
+
+    def _xml_test_shard(t, platform):
+        key = (t.get('arch', ''), platform, t.get('test_config', ''),
+               t.get(f'shard_{platform}', ''),
+               _norm_test_file(t.get('test_file', '')))
+        return _format_test_shards(shard_lookup.get(key, ''))
+
+    cols = ['Arch', 'Test Config', 'Test File', 'Test Class', 'Test Name',
+            f'Job-Level Shard ({s1_name})',
+            f'Test-Level Shard ({s1_name})']
+    if has_set2:
+        cols.append(f'Job-Level Shard ({s2_name})')
+        cols.append(f'Test-Level Shard ({s2_name})')
+    cols.append(f'Status ({s1_name})')
+    if has_set2:
+        cols.append(f'Status ({s2_name})')
+    cols.append('Also Failing In')
+
+    if s1_failed:
+        lines.append(f'### FAILED TESTS ({len(s1_failed)})')
         lines.append('')
-        cols = ['Arch', 'Test Config', 'Test File', 'Test Class', 'Test Name',
-                'Shard', f'Status ({s1_name})']
-        if has_set2:
-            cols.append(f'Status ({s2_name})')
         lines.append('| ' + ' | '.join(cols) + ' |')
         lines.append('| ' + ' | '.join(['---'] * len(cols)) + ' |')
-        for t in failed_tests:
+        for t in s1_failed:
             line = (f"| {t['arch']} | {t['test_config']} | {t['test_file']} "
                     f"| {t['test_class']} | {t['test_name']} "
-                    f"| {t.get('shard', '')} | {t[f'status_{s1_name}']}")
+                    f"| {t.get(f'shard_{s1_name}', '')} "
+                    f"| {_xml_test_shard(t, s1_name)}")
+            if has_set2:
+                line += f" | {t.get(f'shard_{s2_name}', '')}"
+                line += f" | {_xml_test_shard(t, s2_name)}"
+            line += f" | {t[f'status_{s1_name}']}"
             if has_set2:
                 line += f" | {t.get(f'status_{s2_name}', '')}"
-            line += ' |'
+            line += f" | {t.get('also_failing_in', '')} |"
             lines.append(line)
         lines.append('')
     else:
@@ -442,22 +693,40 @@ def write_markdown(rows, archs, output_path, failed_tests=None, s1_name='set1', 
         lines.append('')
 
     if log_failures:
-        lines.append('### LOG-BASED FAILURES (not in XML)')
-        lines.append('')
-        lines.append('These test failures were detected from CI log files but have no XML report')
-        lines.append('(typically due to timeouts, crashes, or process kills).')
-        lines.append('')
-        lines.append('| Arch | Platform | Test Config | Test File | Test Class | Test Name | Shard | Category |')
-        lines.append('| --- | --- | --- | --- | --- | --- | --- | --- |')
+        xml_failed_keys = {
+            (t['arch'], _norm_test_file(t['test_file']), t['test_class'], t['test_name'])
+            for t in (failed_tests or [])
+        }
+        rocm_log_failures = []
         for lf in log_failures:
+            if lf.get('platform', '') != s1_name:
+                continue
             test_class, test_name = _parse_log_failure_names(lf)
-            lines.append(
-                f"| {lf.get('arch', '')} | {lf.get('platform', '')} | {lf.get('test_config', '')} "
-                f"| {lf.get('test_file', '')} | {test_class} "
-                f"| {test_name} | {lf.get('shard', '')} "
-                f"| {lf.get('category', '')} |"
-            )
-        lines.append('')
+            key = (lf.get('arch', ''), _norm_test_file(lf.get('test_file', '')),
+                   test_class, test_name)
+            if key in xml_failed_keys and lf.get('category', '') != 'FLAKY':
+                continue
+            rocm_log_failures.append(lf)
+        if rocm_log_failures:
+            lines.append(f'### LOG-BASED FAILURES (not in XML) ({len(rocm_log_failures)})')
+            lines.append('')
+            lines.append('These test failures were detected from CI log files but have no XML report')
+            lines.append('(typically due to timeouts, crashes, or process kills).')
+            lines.append('')
+            lines.append('| Arch | Platform | Test Config | Test File | Test Class | Test Name | Job-Level Shard | Test-Level Shard | Category | Also Failing In |')
+            lines.append('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |')
+            for lf in rocm_log_failures:
+                test_class, test_name = _parse_log_failure_names(lf)
+                lines.append(
+                    f"| {lf.get('arch', '')} | {lf.get('platform', '')} | {lf.get('test_config', '')} "
+                    f"| {lf.get('test_file', '')} | {test_class} "
+                    f"| {test_name} "
+                    f"| {lf.get('job_shard', '')} "
+                    f"| {lf.get('test_shard', lf.get('shard', ''))} "
+                    f"| {lf.get('category', '')} "
+                    f"| {lf.get('also_failing_in', '')} |"
+                )
+            lines.append('')
 
     md = '\n'.join(lines)
     with open(output_path, 'w') as f:
@@ -487,13 +756,19 @@ def main():
     failed = collect_failed_tests(arch_data, archs, args.set1_name, args.set2_name)
     any_has_set2 = any(d.get('has_set2', True) for d in arch_data.values())
     log_failures = load_log_failures(args.log_failures) if args.log_failures else []
+    if args.log_failures:
+        log_failures.extend(load_flaky_tests_as_log_failures(args.log_failures))
+    shard_lookup = load_log_shards(args.log_failures) if args.log_failures else {}
+
+    _add_cross_arch_info(failed, log_failures, args.set2_name)
+    _add_log_failure_cross_arch(log_failures, failed, args.set1_name, args.set2_name)
 
     output_base = args.output
     if output_base.endswith('.csv') or output_base.endswith('.md'):
         output_base = output_base.rsplit('.', 1)[0]
 
-    write_csv(data_rows, archs, f'{output_base}.csv', failed, args.set1_name, args.set2_name, has_set2=any_has_set2, log_failures=log_failures)
-    write_markdown(data_rows, archs, f'{output_base}.md', failed, args.set1_name, args.set2_name, has_set2=any_has_set2, log_failures=log_failures)
+    write_csv(data_rows, archs, f'{output_base}.csv', failed, args.set1_name, args.set2_name, has_set2=any_has_set2, log_failures=log_failures, shard_lookup=shard_lookup)
+    write_markdown(data_rows, archs, f'{output_base}.md', failed, args.set1_name, args.set2_name, has_set2=any_has_set2, log_failures=log_failures, shard_lookup=shard_lookup)
 
 
 if __name__ == '__main__':
