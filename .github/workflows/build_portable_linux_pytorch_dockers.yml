@@ -88,7 +88,8 @@ jobs:
           - pytorch_repo: ROCm/pytorch
             pytorch_branch: release/2.9
             label: "2.9"
-    name: "Nightly | torch ${{ matrix.label }} | py${{ env.PYTHON_VERSION }} | ${{ env.AMDGPU_FAMILY }}"
+    # job name cannot access env context, so inputs || defaults are repeated here
+    name: "Nightly | torch ${{ matrix.label }} | py${{ inputs.python_version || '3.12' }} | ${{ inputs.amdgpu_family || 'gfx94X-dcgpu' }}"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout workflow files
@@ -239,7 +240,8 @@ jobs:
   # ── Single image build (manual dispatch) ──────────────────────────────────
   build-docker:
     if: github.event_name == 'workflow_dispatch'
-    name: "Build | ${{ env.AMDGPU_FAMILY }} | ${{ env.PYTORCH_REPO }}@${{ env.PYTORCH_BRANCH }}"
+    # job name cannot access env context, so inputs || defaults are repeated here
+    name: "Build | ${{ inputs.amdgpu_family || 'gfx94X-dcgpu' }} | ${{ inputs.pytorch_repo || 'pytorch/pytorch' }}@${{ inputs.pytorch_branch || 'nightly' }}"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout workflow files
