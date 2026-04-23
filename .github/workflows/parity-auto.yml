@@ -1,0 +1,180 @@
+name: Parity Auto Trigger
+run-name: "Parity auto-trigger · pytorch/pytorch main"
+
+# Polls pytorch/pytorch main for commits whose upstream CI has fully finished,
+# then dispatches .github/workflows/parity.yml on the first ready commit we
+# have not already processed. Designed to keep the parity dashboard fresh
+# with minimal manual work.
+
+on:
+  schedule:
+    # Every 30 minutes. Upstream CI on pytorch/pytorch main typically takes
+    # several hours, so this cadence is plenty to catch new "all-green" SHAs.
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    inputs:
+      max_commits:
+        description: 'How many of the most recent upstream commits to scan.'
+        required: false
+        default: '15'
+        type: string
+      lookback_hours:
+        description: 'Only consider commits at least this many hours old (gives CI time to start).'
+        required: false
+        default: '1'
+        type: string
+      max_age_hours:
+        description: 'Skip commits older than this many hours (avoid back-filling ancient SHAs).'
+        required: false
+        default: '72'
+        type: string
+      arch:
+        description: 'Architectures to pass through to parity.yml.'
+        required: false
+        default: 'mi355, mi300, mi200'
+        type: string
+      dry_run:
+        description: 'Scan and log, but do not dispatch parity.yml.'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: parity-auto-trigger
+  cancel-in-progress: false
+
+jobs:
+  scan-and-dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find a ready upstream commit and dispatch parity.yml
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM: pytorch/pytorch
+          BRANCH: main
+          MAX_COMMITS: ${{ inputs.max_commits || '15' }}
+          LOOKBACK_HOURS: ${{ inputs.lookback_hours || '1' }}
+          MAX_AGE_HOURS: ${{ inputs.max_age_hours || '72' }}
+          ARCH: ${{ inputs.arch || 'mi355, mi300, mi200' }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+          TARGET_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          NOW_EPOCH=$(date -u +%s)
+          MIN_AGE_EPOCH=$((NOW_EPOCH - LOOKBACK_HOURS * 3600))
+          MAX_AGE_EPOCH=$((NOW_EPOCH - MAX_AGE_HOURS  * 3600))
+
+          echo "Upstream:        $UPSTREAM@$BRANCH"
+          echo "Target ref:      $TARGET_REF"
+          echo "Max commits:     $MAX_COMMITS"
+          echo "Min commit age:  ${LOOKBACK_HOURS}h"
+          echo "Max commit age:  ${MAX_AGE_HOURS}h"
+          echo "Arch:            $ARCH"
+          echo "Dry run:         $DRY_RUN"
+          echo
+
+          # --- 1. Recent upstream commits ---------------------------------------
+          COMMITS=$(gh api "repos/$UPSTREAM/commits?sha=$BRANCH&per_page=$MAX_COMMITS" \
+            --jq '.[] | "\(.sha) \(.commit.committer.date)"')
+
+          if [ -z "$COMMITS" ]; then
+            echo "::warning::No commits returned from $UPSTREAM@$BRANCH"
+            exit 0
+          fi
+
+          # --- 2. Already-dispatched SHAs (scan last 100 parity runs in our repo)
+          EXISTING=$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow parity.yml \
+            --limit 100 \
+            --json displayTitle,status,conclusion 2>/dev/null || echo '[]')
+
+          is_already_processed() {
+            local sha="$1"
+            echo "$EXISTING" | jq -e --arg sha "$sha" \
+              'map(select(.displayTitle | contains($sha))) | length > 0' \
+              > /dev/null
+          }
+
+          # --- 3. Walk commits newest->oldest, dispatch first ready unprocessed -
+          DISPATCHED=""
+          while IFS=' ' read -r SHA DATE; do
+            [ -z "$SHA" ] && continue
+            SHORT=$(echo "$SHA" | cut -c1-8)
+            COMMIT_EPOCH=$(date -u -d "$DATE" +%s)
+
+            if [ "$COMMIT_EPOCH" -lt "$MAX_AGE_EPOCH" ]; then
+              echo "[$SHORT] $DATE  too old (>${MAX_AGE_HOURS}h) — stopping scan"
+              break
+            fi
+            if [ "$COMMIT_EPOCH" -gt "$MIN_AGE_EPOCH" ]; then
+              echo "[$SHORT] $DATE  too new (<${LOOKBACK_HOURS}h) — skip"
+              continue
+            fi
+            if is_already_processed "$SHA"; then
+              echo "[$SHORT] already has a parity run — skip"
+              continue
+            fi
+
+            # All check runs on the upstream commit must be completed.
+            STATUSES=$(gh api --paginate \
+              "repos/$UPSTREAM/commits/$SHA/check-runs?per_page=100" \
+              --jq '.check_runs[].status' 2>/dev/null || true)
+            TOTAL=$(printf '%s\n' "$STATUSES" | grep -c . || true)
+            NOT_DONE=$(printf '%s\n' "$STATUSES" | grep -vc '^completed$' || true)
+
+            if [ "$TOTAL" -lt 1 ]; then
+              echo "[$SHORT] no check-runs yet — skip"
+              continue
+            fi
+            if [ "$NOT_DONE" -gt 0 ]; then
+              echo "[$SHORT] $NOT_DONE/$TOTAL check-runs still running — skip"
+              continue
+            fi
+
+            echo "[$SHORT] READY: $TOTAL check-runs completed (committed $DATE)"
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "[$SHORT] DRY_RUN=true — not dispatching"
+              DISPATCHED="$SHA"
+              break
+            fi
+
+            # csv_name embeds the full SHA so it appears in displayTitle and
+            # future runs of this workflow can detect it via is_already_processed.
+            DATE_TAG=$(date -u +%Y%m%d)
+            CSV_NAME="autoparity-${DATE_TAG}-${SHA}"
+            echo "[$SHORT] Dispatching parity.yml (csv_name=$CSV_NAME, arch=\"$ARCH\")"
+            gh workflow run parity.yml \
+              --repo "$GITHUB_REPOSITORY" \
+              --ref  "$TARGET_REF" \
+              -f sha="$SHA" \
+              -f arch="$ARCH" \
+              -f csv_name="$CSV_NAME"
+
+            DISPATCHED="$SHA"
+            break
+          done <<< "$COMMITS"
+
+          # --- 4. Summary -------------------------------------------------------
+          {
+            echo "### Parity auto-trigger"
+            echo ""
+            echo "- Upstream: \`$UPSTREAM@$BRANCH\`"
+            echo "- Scanned:  $MAX_COMMITS commits"
+            echo "- Window:   ${LOOKBACK_HOURS}h..${MAX_AGE_HOURS}h old"
+            if [ -n "$DISPATCHED" ]; then
+              SHORT=$(echo "$DISPATCHED" | cut -c1-8)
+              if [ "$DRY_RUN" = "true" ]; then
+                echo "- Result:   would dispatch parity for \`$SHORT\` (dry-run)"
+              else
+                echo "- Result:   dispatched parity.yml for \`$SHORT\` (\`$DISPATCHED\`)"
+              fi
+            else
+              echo "- Result:   no ready unprocessed commit found"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
