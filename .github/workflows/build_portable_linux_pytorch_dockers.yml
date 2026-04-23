@@ -25,15 +25,15 @@ on:
       amdgpu_family:
         type: choice
         options:
-          - gfx950-dcgpu
           - gfx94X-dcgpu
+          - gfx950-dcgpu
           - gfx90X-dcgpu
           - gfx120X-all
           - gfx110X-all
           - gfx110X-dgpu
           - gfx103X-dgpu
           - gfx101X-dgpu
-        default: gfx950-dcgpu
+        default: gfx94X-dcgpu
       rocm_version:
         description: "ROCm version (e.g. '7.13.0a20260413'). Leave empty to auto-discover from the latest available torch wheel."
         type: string
@@ -49,7 +49,7 @@ permissions:
 run-name: >-
   ${{ github.event_name == 'schedule' && 'Nightly Docker builds' ||
       format('Build PyTorch Docker ({0}, {1}/{2}, ROCm {3})',
-             inputs.amdgpu_family || 'gfx950-dcgpu',
+             inputs.amdgpu_family || 'gfx94X-dcgpu',
              inputs.pytorch_repo || 'pytorch/pytorch',
              inputs.pytorch_branch || 'nightly',
              inputs.rocm_version || 'auto') }}
@@ -63,7 +63,7 @@ env:
   PYTORCH_REPO: ${{ inputs.pytorch_repo || 'pytorch/pytorch' }}
   PYTORCH_BRANCH: ${{ inputs.pytorch_branch || 'nightly' }}
   PYTHON_VERSION: ${{ inputs.python_version || '3.12' }}
-  AMDGPU_FAMILY: ${{ inputs.amdgpu_family || 'gfx950-dcgpu' }}
+  AMDGPU_FAMILY: ${{ inputs.amdgpu_family || 'gfx94X-dcgpu' }}
   ROCM_VERSION: ${{ inputs.rocm_version }}
   INDEX_URL: ${{ inputs.index_url || 'https://rocm.nightlies.amd.com/v2-staging' }}
   BASE_IMAGE: "ubuntu:24.04"
