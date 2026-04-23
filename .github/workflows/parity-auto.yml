@@ -1,40 +1,49 @@
 name: Parity Auto Trigger
 run-name: "Parity auto-trigger · pytorch/pytorch main"
 
-# Polls pytorch/pytorch main for commits whose upstream CI has fully finished,
-# then dispatches .github/workflows/parity.yml on the first ready commit we
-# have not already processed. Designed to keep the parity dashboard fresh
-# with minimal manual work.
+# Polls pytorch/pytorch main for commits where any of the upstream CI
+# workflows we care about have completed, and dispatches parity.yml
+# with only the subset of archs whose required workflow is ready.
+#
+# This is intentionally per-arch, not per-commit-as-a-whole: most
+# commits only have `trunk` completed (so only mi355 is runnable),
+# while periodic workflows like `rocm-mi300` or `trunk-rocm-sandbox`
+# land on a SHA much less often. We dispatch once per (SHA, arch-set)
+# tuple so mi355 gets a parity run per commit and mi300/mi200 get
+# one whenever their periodic workflow happens to finish on a SHA.
 
 on:
   schedule:
-    # Every 30 minutes. Upstream CI on pytorch/pytorch main typically takes
-    # several hours, so this cadence is plenty to catch new "all-green" SHAs.
     - cron: '*/30 * * * *'
   workflow_dispatch:
     inputs:
       max_commits:
         description: 'How many of the most recent upstream commits to scan.'
         required: false
-        default: '15'
-        type: string
-      lookback_hours:
-        description: 'Only consider commits at least this many hours old (gives CI time to start).'
-        required: false
-        default: '1'
+        default: '20'
         type: string
       max_age_hours:
-        description: 'Skip commits older than this many hours (avoid back-filling ancient SHAs).'
+        description: 'Skip commits older than this (avoid back-filling ancient SHAs).'
         required: false
         default: '72'
         type: string
-      arch:
-        description: 'Architectures to pass through to parity.yml.'
+      archs:
+        description: 'Architectures to consider (comma/space separated).'
         required: false
         default: 'mi355, mi300, mi200'
         type: string
+      arch_workflow_map:
+        description: 'JSON: arch → required upstream workflow name (default tier).'
+        required: false
+        default: '{"mi355":"trunk","mi300":"rocm-mi300","mi200":"trunk-rocm-sandbox","navi31":"rocm-navi31","nightly":"rocm-nightly"}'
+        type: string
+      target_ref:
+        description: 'Ref of this repo to dispatch parity.yml against. Leave blank to use this workflow run''s ref.'
+        required: false
+        default: ''
+        type: string
       dry_run:
-        description: 'Scan and log, but do not dispatch parity.yml.'
+        description: 'Scan and log, but do not actually dispatch parity.yml.'
         required: false
         default: false
         type: boolean
@@ -51,34 +60,35 @@ jobs:
   scan-and-dispatch:
     runs-on: ubuntu-latest
     steps:
-      - name: Find a ready upstream commit and dispatch parity.yml
+      - name: Find ready arches per upstream commit and dispatch parity.yml
         env:
           GH_TOKEN: ${{ github.token }}
           UPSTREAM: pytorch/pytorch
           BRANCH: main
-          MAX_COMMITS: ${{ inputs.max_commits || '15' }}
-          LOOKBACK_HOURS: ${{ inputs.lookback_hours || '1' }}
+          MAX_COMMITS: ${{ inputs.max_commits || '20' }}
           MAX_AGE_HOURS: ${{ inputs.max_age_hours || '72' }}
-          ARCH: ${{ inputs.arch || 'mi355, mi300, mi200' }}
+          ARCHS_IN: ${{ inputs.archs || 'mi355, mi300, mi200' }}
+          ARCH_WORKFLOW_MAP: ${{ inputs.arch_workflow_map || '{"mi355":"trunk","mi300":"rocm-mi300","mi200":"trunk-rocm-sandbox","navi31":"rocm-navi31","nightly":"rocm-nightly"}' }}
+          TARGET_REF_IN: ${{ inputs.target_ref || '' }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
-          TARGET_REF: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
           NOW_EPOCH=$(date -u +%s)
-          MIN_AGE_EPOCH=$((NOW_EPOCH - LOOKBACK_HOURS * 3600))
-          MAX_AGE_EPOCH=$((NOW_EPOCH - MAX_AGE_HOURS  * 3600))
+          MAX_AGE_EPOCH=$((NOW_EPOCH - MAX_AGE_HOURS * 3600))
+          TARGET_REF="${TARGET_REF_IN:-$GITHUB_REF_NAME}"
+          ARCHS=$(echo "$ARCHS_IN" | tr ',' ' ' | xargs)
 
-          echo "Upstream:        $UPSTREAM@$BRANCH"
-          echo "Target ref:      $TARGET_REF"
-          echo "Max commits:     $MAX_COMMITS"
-          echo "Min commit age:  ${LOOKBACK_HOURS}h"
-          echo "Max commit age:  ${MAX_AGE_HOURS}h"
-          echo "Arch:            $ARCH"
-          echo "Dry run:         $DRY_RUN"
+          echo "Upstream:       $UPSTREAM@$BRANCH"
+          echo "Target ref:     $TARGET_REF"
+          echo "Scope archs:    $ARCHS"
+          echo "Max commits:    $MAX_COMMITS"
+          echo "Max age:        ${MAX_AGE_HOURS}h"
+          echo "Dry run:        $DRY_RUN"
+          echo "Arch→workflow:  $ARCH_WORKFLOW_MAP"
           echo
 
-          # --- 1. Recent upstream commits ---------------------------------------
+          # --- 1. Recent upstream commits --------------------------------------
           COMMITS=$(gh api "repos/$UPSTREAM/commits?sha=$BRANCH&per_page=$MAX_COMMITS" \
             --jq '.[] | "\(.sha) \(.commit.committer.date)"')
 
@@ -87,22 +97,31 @@ jobs:
             exit 0
           fi
 
-          # --- 2. Already-dispatched SHAs (scan last 100 parity runs in our repo)
+          # --- 2. Already-dispatched (SHA,arch) pairs in our repo --------------
+          # Pull last 200 parity runs. Run titles look like:
+          #   "<csv_name or SHA> · mi355, mi300, mi200"
+          # So for each run that mentions a SHA, the arch list is everything
+          # after ' · '.
           EXISTING=$(gh run list \
             --repo "$GITHUB_REPOSITORY" \
             --workflow parity.yml \
-            --limit 100 \
-            --json displayTitle,status,conclusion 2>/dev/null || echo '[]')
+            --limit 200 \
+            --json displayTitle 2>/dev/null || echo '[]')
 
-          is_already_processed() {
+          archs_already_for_sha() {
             local sha="$1"
-            echo "$EXISTING" | jq -e --arg sha "$sha" \
-              'map(select(.displayTitle | contains($sha))) | length > 0' \
-              > /dev/null
+            echo "$EXISTING" | jq -r --arg sha "$sha" \
+              'map(select(.displayTitle | contains($sha))) | .[].displayTitle' \
+              | sed 's/.* · //' \
+              | tr ',' '\n' \
+              | tr -d ' ' \
+              | grep -v '^$' \
+              | sort -u
           }
 
-          # --- 3. Walk commits newest->oldest, dispatch first ready unprocessed -
-          DISPATCHED=""
+          # --- 3. Walk commits, dispatch first SHA with unprocessed ready archs
+          DISPATCHED_SHA=""
+          DISPATCHED_ARCHS=""
           while IFS=' ' read -r SHA DATE; do
             [ -z "$SHA" ] && continue
             SHORT=$(echo "$SHA" | cut -c1-8)
@@ -112,51 +131,72 @@ jobs:
               echo "[$SHORT] $DATE  too old (>${MAX_AGE_HOURS}h) — stopping scan"
               break
             fi
-            if [ "$COMMIT_EPOCH" -gt "$MIN_AGE_EPOCH" ]; then
-              echo "[$SHORT] $DATE  too new (<${LOOKBACK_HOURS}h) — skip"
-              continue
-            fi
-            if is_already_processed "$SHA"; then
-              echo "[$SHORT] already has a parity run — skip"
+
+            # Which upstream workflows have a completed run on this SHA?
+            COMPLETED_WFS=$(gh api --paginate \
+              "repos/$UPSTREAM/actions/runs?head_sha=$SHA&per_page=100" \
+              --jq '.workflow_runs[] | select(.status == "completed") | .name' \
+              2>/dev/null | sort -u || true)
+
+            if [ -z "$COMPLETED_WFS" ]; then
+              echo "[$SHORT] $DATE  no completed upstream workflow runs yet — skip"
               continue
             fi
 
-            # All check runs on the upstream commit must be completed.
-            STATUSES=$(gh api --paginate \
-              "repos/$UPSTREAM/commits/$SHA/check-runs?per_page=100" \
-              --jq '.check_runs[].status' 2>/dev/null || true)
-            TOTAL=$(printf '%s\n' "$STATUSES" | grep -c . || true)
-            NOT_DONE=$(printf '%s\n' "$STATUSES" | grep -vc '^completed$' || true)
+            # Ready archs = archs whose required upstream workflow is completed.
+            READY=""
+            for ARCH in $ARCHS; do
+              REQ_WF=$(echo "$ARCH_WORKFLOW_MAP" | jq -r --arg a "$ARCH" '.[$a] // ""')
+              if [ -z "$REQ_WF" ]; then
+                echo "[$SHORT] arch '$ARCH' has no arch→workflow entry — skip this arch"
+                continue
+              fi
+              if printf '%s\n' "$COMPLETED_WFS" | grep -qx "$REQ_WF"; then
+                READY="$READY $ARCH"
+              fi
+            done
+            READY=$(echo "$READY" | xargs)
 
-            if [ "$TOTAL" -lt 1 ]; then
-              echo "[$SHORT] no check-runs yet — skip"
+            if [ -z "$READY" ]; then
+              COMPLETED_SUMMARY=$(printf '%s\n' "$COMPLETED_WFS" | paste -sd, -)
+              echo "[$SHORT] no ready archs (completed upstream workflows: $COMPLETED_SUMMARY)"
               continue
             fi
-            if [ "$NOT_DONE" -gt 0 ]; then
-              echo "[$SHORT] $NOT_DONE/$TOTAL check-runs still running — skip"
+
+            # Subtract archs already dispatched for this SHA.
+            ALREADY=$(archs_already_for_sha "$SHA" | tr '\n' ' ')
+            TODO=""
+            for A in $READY; do
+              if ! printf '%s\n' $ALREADY | grep -qx "$A"; then
+                TODO="$TODO $A"
+              fi
+            done
+            TODO=$(echo "$TODO" | xargs)
+
+            if [ -z "$TODO" ]; then
+              echo "[$SHORT] all ready archs already dispatched (ready=$(echo "$READY" | tr ' ' ','))"
               continue
             fi
 
-            echo "[$SHORT] READY: $TOTAL check-runs completed (committed $DATE)"
+            ARCH_DISPATCH=$(echo "$TODO" | sed 's/ /, /g')
+            CSV_NAME="autoparity-$(date -u +%Y%m%d)-$SHA"
+            echo "[$SHORT] READY archs: '$(echo "$READY" | tr ' ' ',')' (committed $DATE)"
+            echo "[$SHORT] already dispatched for this SHA: '$(echo "$ALREADY" | xargs | tr ' ' ',')'"
+            echo "[$SHORT] dispatching for: '$(echo "$TODO" | tr ' ' ',')'"
+
             if [ "$DRY_RUN" = "true" ]; then
               echo "[$SHORT] DRY_RUN=true — not dispatching"
-              DISPATCHED="$SHA"
-              break
+            else
+              gh workflow run parity.yml \
+                --repo "$GITHUB_REPOSITORY" \
+                --ref  "$TARGET_REF" \
+                -f sha="$SHA" \
+                -f arch="$ARCH_DISPATCH" \
+                -f csv_name="$CSV_NAME"
             fi
 
-            # csv_name embeds the full SHA so it appears in displayTitle and
-            # future runs of this workflow can detect it via is_already_processed.
-            DATE_TAG=$(date -u +%Y%m%d)
-            CSV_NAME="autoparity-${DATE_TAG}-${SHA}"
-            echo "[$SHORT] Dispatching parity.yml (csv_name=$CSV_NAME, arch=\"$ARCH\")"
-            gh workflow run parity.yml \
-              --repo "$GITHUB_REPOSITORY" \
-              --ref  "$TARGET_REF" \
-              -f sha="$SHA" \
-              -f arch="$ARCH" \
-              -f csv_name="$CSV_NAME"
-
-            DISPATCHED="$SHA"
+            DISPATCHED_SHA="$SHA"
+            DISPATCHED_ARCHS="$ARCH_DISPATCH"
             break
           done <<< "$COMMITS"
 
@@ -164,17 +204,18 @@ jobs:
           {
             echo "### Parity auto-trigger"
             echo ""
-            echo "- Upstream: \`$UPSTREAM@$BRANCH\`"
-            echo "- Scanned:  $MAX_COMMITS commits"
-            echo "- Window:   ${LOOKBACK_HOURS}h..${MAX_AGE_HOURS}h old"
-            if [ -n "$DISPATCHED" ]; then
-              SHORT=$(echo "$DISPATCHED" | cut -c1-8)
+            echo "- Upstream:     \`$UPSTREAM@$BRANCH\`"
+            echo "- Scope archs:  \`$ARCHS\`"
+            echo "- Max age:      ${MAX_AGE_HOURS}h"
+            echo "- Target ref:   \`$TARGET_REF\`"
+            if [ -n "$DISPATCHED_SHA" ]; then
+              SHORT=$(echo "$DISPATCHED_SHA" | cut -c1-8)
               if [ "$DRY_RUN" = "true" ]; then
-                echo "- Result:   would dispatch parity for \`$SHORT\` (dry-run)"
+                echo "- Result:       would dispatch parity for \`$SHORT\` arches \`$DISPATCHED_ARCHS\` (dry-run)"
               else
-                echo "- Result:   dispatched parity.yml for \`$SHORT\` (\`$DISPATCHED\`)"
+                echo "- Result:       dispatched parity.yml for \`$SHORT\` arches \`$DISPATCHED_ARCHS\`"
               fi
             else
-              echo "- Result:   no ready unprocessed commit found"
+              echo "- Result:       no ready unprocessed (SHA, arch) pairs found"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
