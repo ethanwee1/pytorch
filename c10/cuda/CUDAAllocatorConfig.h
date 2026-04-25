@@ -1,5 +1,6 @@
 #pragma once
 
+#include <c10/core/AllocatorConfig.h>
 #include <c10/cuda/CUDAMacros.h>
 #include <c10/util/Exception.h>
 #include <c10/util/env.h>
@@ -30,8 +31,10 @@ class C10_CUDA_API CUDAAllocatorConfig {
   }
 
   static bool expandable_segments() {
-#ifndef PYTORCH_C10_DRIVER_API_SUPPORTED
-    if (instance().m_expandable_segments) {
+    bool enabled = c10::CachingAllocator::AcceleratorAllocatorConfig::
+        use_expandable_segments();
+#if !defined(PYTORCH_C10_DRIVER_API_SUPPORTED) && !defined(USE_ROCM)
+    if (enabled) {
       TORCH_WARN_ONCE("expandable_segments not supported on this platform")
     }
     return false;
