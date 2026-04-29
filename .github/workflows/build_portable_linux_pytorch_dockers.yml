@@ -93,7 +93,8 @@ jobs:
           repository: ${{ matrix.pytorch_repo }}
           ref: ${{ matrix.pytorch_branch }}
           path: pytorch-src
-          fetch-depth: 1
+          fetch-depth: 0
+          submodules: recursive
 
       - name: Derive torch version prefix from branch
         id: prefix
@@ -212,21 +213,14 @@ jobs:
             --build-arg "AMDGPU_FAMILY=${{ steps.cfg.outputs.amdgpu_family }}" \
             --build-arg "PYTHON_VERSION=${{ steps.cfg.outputs.python_version }}" \
             --build-arg "INDEX_URL=${{ steps.cfg.outputs.index_url }}" \
-            --build-arg "TORCH_VERSION_PREFIX=${{ steps.prefix.outputs.value }}" \
             pytorch-src
 
           echo "Docker image built successfully: ${IMAGE}"
 
       - name: Get ROCm packages info
-        id: rocm-packages
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.docker-tag.outputs.tag }}"
-          ROCM_PACKAGES=$(docker run --rm "${IMAGE}" pip freeze | grep -i rocm || echo "No ROCm packages found")
-          echo "rocm_packages<<EOF" >> $GITHUB_OUTPUT
-          echo "${ROCM_PACKAGES}" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-          echo "ROCm packages:"
-          echo "${ROCM_PACKAGES}"
+          docker run --rm "${IMAGE}" pip freeze | grep -i rocm || echo "No ROCm packages found"
 
       - name: Push Docker image
         run: |
@@ -264,7 +258,8 @@ jobs:
           repository: ${{ inputs.pytorch_repo || 'pytorch/pytorch' }}
           ref: ${{ inputs.pytorch_branch || 'nightly' }}
           path: pytorch-src
-          fetch-depth: 1
+          fetch-depth: 0
+          submodules: recursive
 
       - name: Derive torch version prefix from branch
         id: prefix
@@ -388,21 +383,14 @@ jobs:
             --build-arg "AMDGPU_FAMILY=${{ steps.cfg.outputs.amdgpu_family }}" \
             --build-arg "PYTHON_VERSION=${{ steps.cfg.outputs.python_version }}" \
             --build-arg "INDEX_URL=${{ steps.cfg.outputs.index_url }}" \
-            --build-arg "TORCH_VERSION_PREFIX=${{ steps.cfg.outputs.torch_prefix }}" \
             pytorch-src
 
           echo "Docker image built successfully: ${IMAGE}"
 
       - name: Get ROCm packages info
-        id: rocm-packages
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.docker-tag.outputs.tag }}"
-          ROCM_PACKAGES=$(docker run --rm "${IMAGE}" pip freeze | grep -i rocm || echo "No ROCm packages found")
-          echo "rocm_packages<<EOF" >> $GITHUB_OUTPUT
-          echo "${ROCM_PACKAGES}" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-          echo "ROCm packages:"
-          echo "${ROCM_PACKAGES}"
+          docker run --rm "${IMAGE}" pip freeze | grep -i rocm || echo "No ROCm packages found"
 
       - name: Push Docker image
         run: |

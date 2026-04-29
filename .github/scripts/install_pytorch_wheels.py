@@ -224,6 +224,10 @@ def main() -> int:
     parser.add_argument(
         "--skip-verify", action="store_true", help="Skip verification step"
     )
+    parser.add_argument(
+        "--rocm-only", action="store_true",
+        help="Only install rocm[devel]; skip torch and companion packages",
+    )
 
     args = parser.parse_args()
 
@@ -231,9 +235,26 @@ def main() -> int:
     index_url = f"{args.index_url.rstrip('/')}/{args.amdgpu_family}/"
 
     rocm = args.rocm_version
+    break_sys = not args.no_break_system_packages
+
+    if args.rocm_only:
+        # Install only rocm[devel] — used when building PyTorch from source
+        if not rocm:
+            torch_prefix = args.torch_version_prefix
+            torch_version = get_latest_package_version_for_rocm(
+                index_url, "torch", None, required=True, version_prefix=torch_prefix,
+            )
+            rocm = re.search(r"\+rocm(.+)", torch_version).group(1)
+        print_banner("ROCm SDK Installation (devel only)")
+        print(f"Index URL:      {index_url}")
+        print(f"AMDGPU Family:  {args.amdgpu_family}")
+        print(f"rocm[devel]:    {rocm}")
+        print("=" * 50)
+        run_pip_install(index_url, [build_package_spec("rocm[devel]", rocm)], break_sys)
+        return
+
     rocm_only = bool(rocm and not args.torch_version)
     torch_prefix = args.torch_version_prefix if rocm_only else None
-    break_sys = not args.no_break_system_packages
 
     if rocm_only:
         # Two-pass install:
