@@ -485,7 +485,7 @@ def main():
     token = os.getenv('GITHUB_TOKEN', '...')
     global authentication_headers
     authentication_headers = {'Authorization': f'token {token}'}
-    if args.pr_id and args.sha1:
+    if (args.pr_id and args.sha1) or (not args.pr_id and not args.sha1):
         error_msg = "Error: Please provide either pr_id or sha!"
         print(error_msg)
         sys.exit(1)
@@ -496,7 +496,7 @@ def main():
         sha = args.sha1
         pr_id = None
     status = "success"
-    print(sha)
+    print(f"sha: {sha}")
 
     # When comparing two commits, prefix log filenames with short SHAs
     if args.baseline_sha:
