@@ -5,20 +5,18 @@ run-name: "Parity auto-trigger · pytorch/pytorch main"
 # parity.yml has finished, and dispatches parity.yml once for that SHA
 # covering every arch whose test shards actually ran on it.
 #
-# Readiness is evaluated at the *check-run* level, not the workflow
-# level: ROCm test shards post check-runs independently, and a single
-# failing shard flips the parent workflow_run to conclusion=failure
-# while siblings are still executing. Relying on workflow_runs would
-# fire too early and produce empty reports.
+# Arch participation is detected at the workflow_run level: if rocm-mi300
+# never ran on a SHA, we don't wait for it or include it. Readiness is then
+# evaluated at the *check-run* level because ROCm test shards post check-runs
+# independently, and a single failing shard flips the parent workflow_run to
+# conclusion=failure while siblings are still executing.
 #
 # Two gates:
-#   1. Every ROCm arch test check-run and every CUDA test check-run
-#      consumed by download_testlogs on the SHA must be status=completed.
-#      We don't want to dispatch mi355 while mi300, CUDA trunk OSDC, or
-#      CUDA inductor shards are still running on the same commit.
-#   2. For each arch in scope, we check whether its test shards
-#      actually ran on this SHA; mi300/mi200 etc. only show up when
-#      their periodic workflow happens to land on that SHA.
+#   1. Detect which ROCm arch workflows actually ran on this SHA.
+#   2. Require every test check-run for those ROCm arch workflows, plus every
+#      CUDA test check-run consumed by download_testlogs, to be status=completed.
+#      We don't want to dispatch mi355 while a mi300 workflow that ran on the
+#      same SHA is still creating or running test shards.
 #
 # We dispatch at most once per SHA with the ready subset of arches, so mi355
 # (run as part of trunk) gets a parity report per commit, and mi300/
@@ -55,6 +53,11 @@ on:
         required: false
         default: '{"mi355":"rocm.*mi355.*/ test \\(","mi300":"rocm.*mi300.*/ test \\(","mi200":"rocm.*(mi200|mi210).*/ test \\(","navi31":"rocm.*navi31.*/ test \\(","nightly":"rocm-nightly.*/ test \\("}'
         type: string
+      arch_workflow_regex_map:
+        description: 'JSON: arch → PCRE regex that matches workflow file paths for upstream ROCm workflows that mean this arch ran on the SHA. Missing workflows mean the arch is not expected for that commit.'
+        required: false
+        default: '{"mi355":"(^|/)(trunk|rocm-mi355|periodic-rocm-mi355|inductor-rocm-mi355)[.]yml$","mi300":"(^|/)(rocm-mi300|periodic-rocm-mi300|inductor-rocm-mi300)[.]yml$","mi200":"(^|/)(trunk-rocm-sandbox|periodic-rocm-mi200)[.]yml$","navi31":"(^|/)(rocm-navi31|periodic-rocm-navi31|inductor-rocm-navi31)[.]yml$","nightly":"(^|/)rocm-nightly[.]yml$"}'
+        type: string
       target_ref:
         description: 'Ref of this repo to dispatch parity.yml against. Leave blank to use this workflow run''s ref.'
         required: false
@@ -88,6 +91,7 @@ jobs:
           MAX_AGE_HOURS: ${{ inputs.max_age_hours || '10' }}
           ARCHS_IN: ${{ inputs.archs || 'mi355, mi300, mi200' }}
           ARCH_JOBNAME_REGEX_MAP: ${{ inputs.arch_jobname_regex_map || '{"mi355":"rocm.*mi355.*/ test \\(","mi300":"rocm.*mi300.*/ test \\(","mi200":"rocm.*(mi200|mi210).*/ test \\(","navi31":"rocm.*navi31.*/ test \\(","nightly":"rocm-nightly.*/ test \\("}' }}
+          ARCH_WORKFLOW_REGEX_MAP: ${{ inputs.arch_workflow_regex_map || '{"mi355":"(^|/)(trunk|rocm-mi355|periodic-rocm-mi355|inductor-rocm-mi355)[.]yml$","mi300":"(^|/)(rocm-mi300|periodic-rocm-mi300|inductor-rocm-mi300)[.]yml$","mi200":"(^|/)(trunk-rocm-sandbox|periodic-rocm-mi200)[.]yml$","navi31":"(^|/)(rocm-navi31|periodic-rocm-navi31|inductor-rocm-navi31)[.]yml$","nightly":"(^|/)rocm-nightly[.]yml$"}' }}
           TARGET_REF_IN: ${{ inputs.target_ref || '' }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
         run: |
@@ -112,7 +116,8 @@ jobs:
           echo "Max dispatches: $MAX_DISPATCHES"
           echo "Max age:        ${MAX_AGE_HOURS}h"
           echo "Dry run:        $DRY_RUN"
-          echo "Arch→regex:     $ARCH_JOBNAME_REGEX_MAP"
+          echo "Arch→jobs:      $ARCH_JOBNAME_REGEX_MAP"
+          echo "Arch→workflows: $ARCH_WORKFLOW_REGEX_MAP"
           echo
 
           # --- 1. Recent upstream commits --------------------------------------
@@ -160,18 +165,49 @@ jobs:
               continue
             fi
 
-            # Pull relevant upstream check-runs for this SHA. We use
-            # check-runs (not workflow_runs) because test shards post
-            # check-runs independently and workflow_run conclusion flips
-            # to 'failure' the moment any shard fails, even while siblings
-            # are still running. We need per-shard state.
+            # First determine which ROCm arch workflows actually ran on this
+            # SHA. If a periodic arch workflow never ran, the arch is not
+            # expected for the report. If it did run, we must wait for its
+            # matching test shards below.
+            ALL_WORKFLOW_RUNS=$(gh api --paginate \
+              "repos/$UPSTREAM/actions/runs?head_sha=$SHA&per_page=100" \
+              --jq '.workflow_runs[] | {name,path,status,conclusion}' \
+              2>/dev/null | jq -s '.' || echo '[]')
+
+            RUN_ARCHS=""
+            NOT_RUN_NOTES=""
+            for ARCH in $ARCHS; do
+              WF_REGEX=$(echo "$ARCH_WORKFLOW_REGEX_MAP" | jq -r --arg a "$ARCH" '.[$a] // ""')
+              if [ -z "$WF_REGEX" ]; then
+                NOT_RUN_NOTES="$NOT_RUN_NOTES $ARCH:no-workflow-regex"
+                continue
+              fi
+              WF_TOTAL=$(echo "$ALL_WORKFLOW_RUNS" | jq --arg rx "$WF_REGEX" \
+                'map(select((.path // "") | test($rx))) | length')
+              if [ "$WF_TOTAL" -eq 0 ]; then
+                NOT_RUN_NOTES="$NOT_RUN_NOTES $ARCH:no-workflow"
+              else
+                RUN_ARCHS="$RUN_ARCHS $ARCH"
+              fi
+            done
+            RUN_ARCHS=$(echo "$RUN_ARCHS" | xargs)
+            NOT_RUN_NOTES=$(echo "$NOT_RUN_NOTES" | xargs)
+
+            if [ -z "$RUN_ARCHS" ]; then
+              echo "[$SHORT] $DATE  no in-scope ROCm workflows ran on upstream (${NOT_RUN_NOTES:-none}) — skip"
+              continue
+            fi
+
+            # Pull relevant upstream check-runs for this SHA. Test shards post
+            # check-runs independently, and workflow_run conclusion can flip to
+            # failure before sibling shards finish. We need per-shard state.
             ALL_CHECK_RUNS=$(gh api --paginate \
               "repos/$UPSTREAM/commits/$SHA/check-runs?per_page=100" \
               --jq '.check_runs[] | {name,status,conclusion}' \
               2>/dev/null | jq -s '.' || echo '[]')
 
             CHECK_RUNS='[]'
-            for ARCH in $ARCHS; do
+            for ARCH in $RUN_ARCHS; do
               REGEX=$(echo "$ARCH_JOBNAME_REGEX_MAP" | jq -r --arg a "$ARCH" '.[$a] // ""')
               [ -z "$REGEX" ] && continue
               ARCH_CHECK_RUNS=$(echo "$ALL_CHECK_RUNS" | jq --arg rx "$REGEX" \
@@ -186,7 +222,7 @@ jobs:
               '[.[] | select(.name | test($rx))]')
 
             if [ "$(echo "$CHECK_RUNS" | jq 'length')" -eq 0 ]; then
-              echo "[$SHORT] $DATE  no in-scope ROCm parity check-runs yet on upstream — skip"
+              echo "[$SHORT] $DATE  ROCm workflows ran ($RUN_ARCHS) but no parity check-runs yet — skip"
               continue
             fi
 
@@ -196,11 +232,11 @@ jobs:
             fi
 
             # Gate 1: require EVERY upstream check-run consumed by the
-            # parity report for this SHA to be status=completed (ROCm
-            # arch test shards, plus CUDA default/distributed/inductor
-            # tests). Once we dispatch for a SHA the parity report is
-            # authored, so dispatching before CUDA or another arch
-            # finishes produces partial reports.
+            # parity report for this SHA to be status=completed (ROCm test
+            # shards for arch workflows that ran, plus CUDA default/
+            # distributed/inductor tests). Once we dispatch for a SHA the
+            # parity report is authored, so dispatching before CUDA or
+            # another arch finishes produces partial reports.
             GATE_CHECK_RUNS=$(jq -s 'add' \
               <(echo "$CHECK_RUNS") \
               <(echo "$CUDA_CHECK_RUNS"))
@@ -216,13 +252,13 @@ jobs:
               continue
             fi
 
-            # Gate 2: for each arch in scope, identify whether that
-            # arch's test shards actually ran on this SHA (some archs
-            # run only on periodic workflows that don't fire every
-            # commit, so mi300/mi200 may legitimately have no shards).
+            # Gate 2: every arch workflow that ran on this SHA must have
+            # matching test shards before we author the one-and-only report
+            # for the SHA. Missing arch workflows are not expected; missing
+            # shards for a workflow that ran means the workflow is not ready.
             READY=""
             NOT_READY_NOTES=""
-            for ARCH in $ARCHS; do
+            for ARCH in $RUN_ARCHS; do
               REGEX=$(echo "$ARCH_JOBNAME_REGEX_MAP" | jq -r --arg a "$ARCH" '.[$a] // ""')
               if [ -z "$REGEX" ]; then
                 NOT_READY_NOTES="$NOT_READY_NOTES $ARCH:no-regex"
@@ -231,7 +267,7 @@ jobs:
               TOTAL=$(echo "$CHECK_RUNS" | jq --arg rx "$REGEX" \
                 'map(select(.name | test($rx))) | length')
               if [ "$TOTAL" -eq 0 ]; then
-                NOT_READY_NOTES="$NOT_READY_NOTES $ARCH:no-shards"
+                NOT_READY_NOTES="$NOT_READY_NOTES $ARCH:workflow-run-no-shards-yet"
               else
                 READY="$READY $ARCH"
               fi
@@ -239,14 +275,19 @@ jobs:
             READY=$(echo "$READY" | xargs)
             NOT_READY_NOTES=$(echo "$NOT_READY_NOTES" | xargs)
 
+            if [ -n "$NOT_READY_NOTES" ]; then
+              echo "[$SHORT] $DATE  ROCm workflows ran ($RUN_ARCHS) but some test shards are missing — skip (${NOT_READY_NOTES})"
+              continue
+            fi
+
             if [ -z "$READY" ]; then
-              echo "[$SHORT] $DATE  all ROCm check-runs complete but no in-scope arches ran (${NOT_READY_NOTES:-none})"
+              echo "[$SHORT] $DATE  ROCm workflows ran ($RUN_ARCHS) but no in-scope arches are ready"
               continue
             fi
 
             ARCH_DISPATCH=$(echo "$READY" | sed 's/ /, /g')
             CSV_NAME="autoparity-$(date -u +%Y%m%d)-$SHA"
-            echo "[$SHORT] READY archs: '$(echo "$READY" | tr ' ' ',')' (committed $DATE; still-pending: ${NOT_READY_NOTES:-none})"
+            echo "[$SHORT] READY archs: '$(echo "$READY" | tr ' ' ',')' (committed $DATE; not-run: ${NOT_RUN_NOTES:-none})"
             echo "[$SHORT] dispatching for: '$(echo "$READY" | tr ' ' ',')'"
 
             if [ "$DRY_RUN" = "true" ]; then
