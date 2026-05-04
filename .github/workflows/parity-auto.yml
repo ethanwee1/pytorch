@@ -41,7 +41,7 @@ on:
       max_age_hours:
         description: 'Skip commits older than this (avoid back-filling ancient SHAs).'
         required: false
-        default: '10'
+        default: '24'
         type: string
       archs:
         description: 'Architectures to consider (comma/space separated).'
@@ -88,7 +88,7 @@ jobs:
           BRANCH: main
           MAX_COMMITS: ${{ inputs.max_commits || '15' }}
           MAX_DISPATCHES: ${{ inputs.max_dispatches || '10' }}
-          MAX_AGE_HOURS: ${{ inputs.max_age_hours || '10' }}
+          MAX_AGE_HOURS: ${{ inputs.max_age_hours || '24' }}
           ARCHS_IN: ${{ inputs.archs || 'mi355, mi300, mi200' }}
           ARCH_JOBNAME_REGEX_MAP: ${{ inputs.arch_jobname_regex_map || '{"mi355":"rocm.*mi355.*/ test \\(","mi300":"rocm.*mi300.*/ test \\(","mi200":"rocm.*(mi200|mi210).*/ test \\(","navi31":"rocm.*navi31.*/ test \\(","nightly":"rocm-nightly.*/ test \\("}' }}
           ARCH_WORKFLOW_REGEX_MAP: ${{ inputs.arch_workflow_regex_map || '{"mi355":"(^|/)(trunk|rocm-mi355|periodic-rocm-mi355|inductor-rocm-mi355)[.]yml$","mi300":"(^|/)(rocm-mi300|periodic-rocm-mi300|inductor-rocm-mi300)[.]yml$","mi200":"(^|/)(trunk-rocm-sandbox|periodic-rocm-mi200)[.]yml$","navi31":"(^|/)(rocm-navi31|periodic-rocm-navi31|inductor-rocm-navi31)[.]yml$","nightly":"(^|/)rocm-nightly[.]yml$"}' }}
