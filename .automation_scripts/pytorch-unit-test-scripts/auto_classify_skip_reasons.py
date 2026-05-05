@@ -3,7 +3,8 @@
 Auto-classify skip reasons for ROCm parity CSV tests.
 
 Takes a parity CSV (output of summarize_xml_testreports.py) and automatically
-assigns skip_reason categories to tests where ROCm=SKIPPED/MISSED and CUDA=PASSED
+assigns skip_reason categories to tests where ROCm=SKIPPED/MISSED and CUDA is
+not SKIPPED
 based on patterns in:
   - The skip message (message_rocm column)
   - The test file name
@@ -226,6 +227,12 @@ RULES = [
     {"reason": "hipdnn",
      "msg": r"Efficient or cuDNN Attention was not built"},
 
+    # --- SDPA_CK: ROCm-only CK backend variants have no matching CUDA test row ---
+    {"reason": "SDPA_CK",
+     "file": r"^test_transformers$",
+     "cls": r"^TestSDPACudaOnlyCUDA$",
+     "name": r"sdpa_backend_ck"},
+
     # --- Will not be supported on ROCm: test_transformers with (no message) ---
     {"reason": "Will not be supported on ROCm",
      "file": r"^test_transformers$",
@@ -318,6 +325,8 @@ RULES = [
     # variable length attention
     {"reason": "variable length attention",
      "msg": r"ROCm does not support seqused_k"},
+    {"reason": "variable length attention",
+     "msg": r"FA4 backend not available"},
 
     # CUDA IPC
     {"reason": "Pass with unskip or minor mod",
@@ -362,6 +371,12 @@ RULES = [
     {"reason": "Will not be supported on ROCm",
      "msg": r"Need Blackwell"},
 
+    # CK backend
+    {"reason": "CK backend",
+     "msg": r"CK backend"},
+    {"reason": "CK backend",
+     "msg": r"kernel compilation errors on gfx"},
+
     # CUDA SM requirements
     {"reason": "explicit NVIDIA test",
      "msg": r"Requires CUDA SM >= [0-9]"},
@@ -373,6 +388,14 @@ RULES = [
      "msg": r"Requires NCCL version greater than"},
     {"reason": "explicit NVIDIA test",
      "msg": r"Excluded from CUDA tests"},
+    {"reason": "explicit NVIDIA test",
+     "msg": r"Test requires CUDA"},
+    {"reason": "explicit NVIDIA test",
+     "msg": r"Need at least [0-9]+ devices"},
+    {"reason": "explicit NVIDIA test",
+     "msg": r"XPU not available"},
+    {"reason": "explicit NVIDIA test",
+     "msg": r"need sm_[0-9x]+ exactly"},
 
     # FP8 — MI300+ / H100+ only
     {"reason": "FP8",
@@ -412,6 +435,26 @@ RULES = [
     # Process Group: NCCL version / device assert
     {"reason": "Process Group",
      "msg": r"NCCL test requires 2\+ GPUs"},
+
+    # PT2.0 / inductor skip messages
+    {"reason": "PT2.0 - Inductor",
+     "msg": r"Scheduler static analysis needs investigation on ROCm"},
+    {"reason": "PT2.0 - Inductor",
+     "msg": r"test is slow; run with PYTORCH_TEST_WITH_SLOW"},
+    {"reason": "PT2.0 - Inductor",
+     "msg": r"ROCm doesn't support sm carveout"},
+    {"reason": "PT2.0 - Inductor",
+     "msg": r"Logs not consistent with async pipelined autotuning"},
+    {"reason": "PT2.0 - Inductor",
+     "msg": r"Flaky on trunk"},
+    {"reason": "PT2.0 - Inductor",
+     "msg": r"Triton bug in compilation"},
+
+    # Missing generic implementations
+    {"reason": "Misc",
+     "msg": r"`biject_to` not implemented"},
+    {"reason": "Misc",
+     "msg": r"skipping on ROCm since https://github\.com/pytorch/pytorch/issues/179955"},
 
     # Misc: ROCm preserves subnormals
     {"reason": "Misc",
@@ -906,7 +949,7 @@ def main():
 
         needs_reason = (
             status_rocm in ('SKIPPED', 'MISSED')
-            and status_cuda == 'PASSED'
+            and status_cuda != 'SKIPPED'
         )
 
         if not needs_reason:
