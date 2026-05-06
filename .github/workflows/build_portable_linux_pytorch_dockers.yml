@@ -1,5 +1,12 @@
 name: Build Portable Linux PyTorch Dockers
 
+# Workflow split (parent vs reusable callee):
+# - Parent (this file): build_portable_linux_pytorch_dockers.yml — schedule + workflow_dispatch entrypoints.
+# - Callee: .github/workflows/_build_portable_linux_pytorch_docker.yml — workflow_call only; build logic moves here.
+# - Defaults: Strategy B — callee workflow_call inputs are required with no default: on the callee; the parent
+#   supplies every value (workflow_dispatch.defaults for manual UI + explicit literals / matrix with: on schedule).
+#   Nested run-name / job names in the callee use inputs.* only (no duplicated || 'fallback' strings there).
+
 on:
   schedule:
     - cron: "0 6 * * *"   # daily at 06:00 UTC
