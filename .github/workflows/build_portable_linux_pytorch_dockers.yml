@@ -127,47 +127,15 @@ jobs:
 
       - name: Discover ROCm version from index
         id: discover
+        env:
+          INDEX_URL: ${{ env.INDEX_URL }}
+          AMDGPU_FAMILY: ${{ env.AMDGPU_FAMILY }}
+          PREFIX_VALUE: ${{ steps.prefix.outputs.value }}
         run: |
-          python3 - "${{ env.INDEX_URL }}" "${{ env.AMDGPU_FAMILY }}" "${{ steps.prefix.outputs.value }}" <<'PYEOF'
-          import re, sys, urllib.request, urllib.parse, os
-
-          index_url, gpu_family = sys.argv[1], sys.argv[2]
-          prefix = sys.argv[3] if len(sys.argv) > 3 else ""
-
-          url = f"{index_url.rstrip('/')}/{gpu_family}/torch/"
-          print(f"Fetching torch index: {url}")
-          html = urllib.request.urlopen(url, timeout=60).read().decode()
-
-          pattern = re.compile(r"torch-(.+?)\.whl", re.IGNORECASE)
-          versions = []
-          for m in pattern.finditer(html):
-              ver = urllib.parse.unquote(m.group(1).split("-")[0])
-              if "+rocm" in ver:
-                  versions.append(ver)
-
-          if prefix:
-              versions = [v for v in versions if v.split("+")[0].startswith(prefix)]
-
-          if not versions:
-              print(f"::error::No torch wheels found (prefix={prefix!r})")
-              sys.exit(1)
-
-          def key(v):
-              try:
-                  return tuple(int(x) for x in re.split(r"[.\-a+]", v) if x.isdigit())
-              except (ValueError, AttributeError):
-                  return (0,)
-
-          latest = max(versions, key=key)
-          rocm_ver = re.search(r"\+rocm(.+)", latest).group(1)
-
-          print(f"Latest torch wheel: {latest}")
-          print(f"Discovered ROCm version: {rocm_ver}")
-
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"rocm_version={rocm_ver}\n")
-              f.write(f"torch_wheel_version={latest}\n")
-          PYEOF
+          python3 .github/scripts/discover_rocm_from_torch_index.py \
+            --index-url "$INDEX_URL" \
+            --amdgpu-family "$AMDGPU_FAMILY" \
+            --torch-version-prefix "$PREFIX_VALUE"
 
       - name: Resolve commit SHA
         id: meta
@@ -280,47 +248,15 @@ jobs:
       - name: Discover ROCm version from index
         id: discover
         if: ${{ !env.ROCM_VERSION }}
+        env:
+          INDEX_URL: ${{ env.INDEX_URL }}
+          AMDGPU_FAMILY: ${{ env.AMDGPU_FAMILY }}
+          PREFIX_VALUE: ${{ steps.prefix.outputs.value }}
         run: |
-          python3 - "${{ env.INDEX_URL }}" "${{ env.AMDGPU_FAMILY }}" "${{ steps.prefix.outputs.value }}" <<'PYEOF'
-          import re, sys, urllib.request, urllib.parse, os
-
-          index_url, gpu_family = sys.argv[1], sys.argv[2]
-          prefix = sys.argv[3] if len(sys.argv) > 3 else ""
-
-          url = f"{index_url.rstrip('/')}/{gpu_family}/torch/"
-          print(f"Fetching torch index: {url}")
-          html = urllib.request.urlopen(url, timeout=60).read().decode()
-
-          pattern = re.compile(r"torch-(.+?)\.whl", re.IGNORECASE)
-          versions = []
-          for m in pattern.finditer(html):
-              ver = urllib.parse.unquote(m.group(1).split("-")[0])
-              if "+rocm" in ver:
-                  versions.append(ver)
-
-          if prefix:
-              versions = [v for v in versions if v.split("+")[0].startswith(prefix)]
-
-          if not versions:
-              print(f"::error::No torch wheels found (prefix={prefix!r})")
-              sys.exit(1)
-
-          def key(v):
-              try:
-                  return tuple(int(x) for x in re.split(r"[.\-a+]", v) if x.isdigit())
-              except (ValueError, AttributeError):
-                  return (0,)
-
-          latest = max(versions, key=key)
-          rocm_ver = re.search(r"\+rocm(.+)", latest).group(1)
-
-          print(f"Latest torch wheel: {latest}")
-          print(f"Discovered ROCm version: {rocm_ver}")
-
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"rocm_version={rocm_ver}\n")
-              f.write(f"torch_wheel_version={latest}\n")
-          PYEOF
+          python3 .github/scripts/discover_rocm_from_torch_index.py \
+            --index-url "$INDEX_URL" \
+            --amdgpu-family "$AMDGPU_FAMILY" \
+            --torch-version-prefix "$PREFIX_VALUE"
 
       - name: Resolve ROCm version
         id: rocm
