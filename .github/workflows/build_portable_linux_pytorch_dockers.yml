@@ -1,12 +1,5 @@
 name: Build Portable Linux PyTorch Dockers
 
-# Workflow split (parent vs reusable callee):
-# - Parent (this file): build_portable_linux_pytorch_dockers.yml — schedule + workflow_dispatch entrypoints.
-# - Callee: .github/workflows/_build_portable_linux_pytorch_docker.yml — workflow_call only; build logic moves here.
-# - Defaults: Strategy B — callee workflow_call inputs are required with no default: on the callee; the parent
-#   supplies every value (workflow_dispatch.defaults for manual UI + explicit literals / matrix with: on schedule).
-#   Nested run-name / job names in the callee use inputs.* only (no duplicated || 'fallback' strings there).
-
 on:
   schedule:
     - cron: "0 6 * * *"   # daily at 06:00 UTC
@@ -52,8 +45,8 @@ on:
 permissions:
   contents: read
 
-# run-name and job name cannot access the env context, so the
-# inputs || 'fallback' defaults are necessarily repeated here.
+# Parent workflow owns all default literals. The reusable callee receives every
+# input explicitly and uses inputs.* everywhere internally.
 run-name: >-
   ${{ github.event_name == 'schedule' && 'Nightly Docker builds' ||
       format('Build PyTorch Docker ({0}, {1}/{2}, ROCm {3})',
@@ -62,24 +55,7 @@ run-name: >-
              inputs.pytorch_branch || 'nightly',
              inputs.rocm_version || 'auto') }}
 
-# ── Single source of truth for every configurable value ──────────────
-# For workflow_dispatch the user's input wins; for schedule (or when an
-# input is left blank) the fallback after || applies.  All jobs / steps
-# reference env.XXX — never raw inputs (except in run-name and job name
-# where the env context is unavailable).
-env:
-  REGISTRY: docker.io
-  IMAGE_NAME: rocm/pytorch-private
-  PYTORCH_REPO: ${{ inputs.pytorch_repo || 'pytorch/pytorch' }}
-  PYTORCH_BRANCH: ${{ inputs.pytorch_branch || 'nightly' }}
-  PYTHON_VERSION: ${{ inputs.python_version || '3.12' }}
-  AMDGPU_FAMILY: ${{ inputs.amdgpu_family || 'gfx94X-dcgpu' }}
-  ROCM_VERSION: ${{ inputs.rocm_version }}
-  INDEX_URL: ${{ inputs.index_url || 'https://rocm.nightlies.amd.com/v2-staging' }}
-  BASE_IMAGE: "ubuntu:24.04"
-
 jobs:
-  # ── Nightly matrix build (schedule only) ─────────────────────────────────
   nightly-matrix:
     if: github.event_name == 'schedule'
     strategy:
@@ -98,246 +74,36 @@ jobs:
           - pytorch_repo: ROCm/pytorch
             pytorch_branch: release/2.9
             label: "2.9"
-    # job name cannot access env context — inputs || defaults repeated here
-    name: "Nightly | torch ${{ matrix.label }} | py${{ inputs.python_version || '3.12' }} | ${{ inputs.amdgpu_family || 'gfx94X-dcgpu' }}"
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout workflow files
-        uses: actions/checkout@v4
+    name: "Nightly | torch ${{ matrix.label }} | py3.12 | gfx94X-dcgpu"
+    uses: ./.github/workflows/_build_portable_linux_pytorch_docker.yml
+    secrets: inherit
+    with:
+      pytorch_repo: ${{ matrix.pytorch_repo }}
+      pytorch_branch: ${{ matrix.pytorch_branch }}
+      python_version: "3.12"
+      amdgpu_family: gfx94X-dcgpu
+      rocm_version: auto
+      index_url: "https://rocm.nightlies.amd.com/v2-staging"
+      base_image: "ubuntu:24.04"
+      registry: docker.io
+      image_name: rocm/pytorch-private
+      job_display_name: "Nightly | torch ${{ matrix.label }} | py3.12 | gfx94X-dcgpu"
+      summary_title: "PyTorch Docker Build - ${{ matrix.label }}"
 
-      - name: Checkout PyTorch source
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ matrix.pytorch_repo }}
-          ref: ${{ matrix.pytorch_branch }}
-          path: pytorch-src
-          fetch-depth: 1
-
-      - name: Derive torch version prefix from branch
-        id: prefix
-        run: |
-          BRANCH="${{ matrix.pytorch_branch }}"
-          if [[ "$BRANCH" =~ ^release/([0-9]+\.[0-9]+) ]]; then
-            echo "value=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
-            echo "Derived torch prefix: ${BASH_REMATCH[1]}"
-          else
-            echo "value=" >> $GITHUB_OUTPUT
-            echo "No prefix (nightly/main branch)"
-          fi
-
-      - name: Discover ROCm version from index
-        id: discover
-        env:
-          INDEX_URL: ${{ env.INDEX_URL }}
-          AMDGPU_FAMILY: ${{ env.AMDGPU_FAMILY }}
-          PREFIX_VALUE: ${{ steps.prefix.outputs.value }}
-        run: |
-          python3 .github/scripts/discover_rocm_from_torch_index.py \
-            --index-url "$INDEX_URL" \
-            --amdgpu-family "$AMDGPU_FAMILY" \
-            --torch-version-prefix "$PREFIX_VALUE"
-
-      - name: Resolve commit SHA
-        id: meta
-        run: |
-          COMMIT="$(cd pytorch-src && git rev-parse --short=8 HEAD)"
-          echo "pytorch_commit=${COMMIT}" >> $GITHUB_OUTPUT
-
-      - name: Generate Docker image tag
-        id: docker-tag
-        run: |
-          BRANCH="${{ matrix.pytorch_branch }}"
-          BRANCH_SAFE="${BRANCH//\//-}"
-          ROCM_VERSION="${{ steps.discover.outputs.rocm_version }}"
-          OS=$(echo "${{ env.BASE_IMAGE }}" | tr -d ':' | tr '/' '-')
-
-          IMAGE_TAG="pytorch-${BRANCH_SAFE}-${{ steps.meta.outputs.pytorch_commit }}-rocm${ROCM_VERSION}-${OS}-py${{ env.PYTHON_VERSION }}-${{ env.AMDGPU_FAMILY }}"
-          IMAGE_TAG="${IMAGE_TAG//+/-}"
-          echo "tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
-          echo "Generated image tag: ${IMAGE_TAG}"
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERUSERNAME }}
-          password: ${{ secrets.DOCKERTOKEN }}
-
-      - name: Prepare build context
-        run: |
-          cp dockerfiles/Dockerfile pytorch-src/
-          mkdir -p pytorch-src/.github/scripts
-          cp .github/scripts/install_rocm_deps.sh pytorch-src/.github/scripts/
-          cp .github/scripts/install_pytorch_wheels.py pytorch-src/.github/scripts/
-
-      - name: Build Docker image
-        run: |
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.docker-tag.outputs.tag }}"
-
-          docker build \
-            --file pytorch-src/Dockerfile \
-            --tag "${IMAGE}" \
-            --label "pytorch.repo=${{ matrix.pytorch_repo }}" \
-            --label "pytorch.branch=${{ matrix.pytorch_branch }}" \
-            --label "pytorch.commit=${{ steps.meta.outputs.pytorch_commit }}" \
-            --build-arg "BASE_IMAGE=${{ env.BASE_IMAGE }}" \
-            --build-arg "ROCM_VERSION=${{ steps.discover.outputs.rocm_version }}" \
-            --build-arg "AMDGPU_FAMILY=${{ env.AMDGPU_FAMILY }}" \
-            --build-arg "PYTHON_VERSION=${{ env.PYTHON_VERSION }}" \
-            --build-arg "INDEX_URL=${{ env.INDEX_URL }}" \
-            --build-arg "TORCH_VERSION_PREFIX=${{ steps.prefix.outputs.value }}" \
-            pytorch-src
-
-          echo "Docker image built successfully: ${IMAGE}"
-
-      - name: Get ROCm packages info
-        run: |
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.docker-tag.outputs.tag }}"
-          docker run --rm "${IMAGE}" pip freeze | grep -i rocm || echo "No ROCm packages found"
-
-      - name: Push Docker image
-        run: |
-          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.docker-tag.outputs.tag }}
-          echo "Docker image pushed successfully"
-
-      - name: Post-build summary
-        run: |
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.docker-tag.outputs.tag }}"
-          echo "## PyTorch Docker Build — ${{ matrix.label }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Image | \`${IMAGE}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Torch Wheel | ${{ steps.discover.outputs.torch_wheel_version }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| PyTorch Repo | ${{ matrix.pytorch_repo }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| PyTorch Branch | ${{ matrix.pytorch_branch }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| PyTorch Commit | ${{ steps.meta.outputs.pytorch_commit }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| AMDGPU Family | ${{ env.AMDGPU_FAMILY }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Python | ${{ env.PYTHON_VERSION }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| ROCm (discovered) | ${{ steps.discover.outputs.rocm_version }} |" >> $GITHUB_STEP_SUMMARY
-
-  # ── Single image build (manual dispatch) ──────────────────────────────────
   build-docker:
     if: github.event_name == 'workflow_dispatch'
-    # job name cannot access env context — inputs || defaults repeated here
     name: "Build | ${{ inputs.amdgpu_family || 'gfx94X-dcgpu' }} | ${{ inputs.pytorch_repo || 'pytorch/pytorch' }}@${{ inputs.pytorch_branch || 'nightly' }}"
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout workflow files
-        uses: actions/checkout@v4
-
-      - name: Checkout PyTorch source
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.PYTORCH_REPO }}
-          ref: ${{ env.PYTORCH_BRANCH }}
-          path: pytorch-src
-          fetch-depth: 1
-
-      - name: Derive torch version prefix from branch
-        id: prefix
-        run: |
-          BRANCH="${{ env.PYTORCH_BRANCH }}"
-          if [[ "$BRANCH" =~ ^release/([0-9]+\.[0-9]+) ]]; then
-            echo "value=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
-            echo "Derived torch prefix: ${BASH_REMATCH[1]}"
-          else
-            echo "value=" >> $GITHUB_OUTPUT
-            echo "No prefix (nightly branch)"
-          fi
-
-      - name: Discover ROCm version from index
-        id: discover
-        if: ${{ !env.ROCM_VERSION }}
-        env:
-          INDEX_URL: ${{ env.INDEX_URL }}
-          AMDGPU_FAMILY: ${{ env.AMDGPU_FAMILY }}
-          PREFIX_VALUE: ${{ steps.prefix.outputs.value }}
-        run: |
-          python3 .github/scripts/discover_rocm_from_torch_index.py \
-            --index-url "$INDEX_URL" \
-            --amdgpu-family "$AMDGPU_FAMILY" \
-            --torch-version-prefix "$PREFIX_VALUE"
-
-      - name: Resolve ROCm version
-        id: rocm
-        run: |
-          ROCM="${{ env.ROCM_VERSION || steps.discover.outputs.rocm_version }}"
-          echo "version=${ROCM}" >> $GITHUB_OUTPUT
-
-      - name: Resolve commit SHA
-        id: meta
-        run: |
-          COMMIT="$(cd pytorch-src && git rev-parse --short=8 HEAD)"
-          echo "pytorch_commit=${COMMIT}" >> $GITHUB_OUTPUT
-
-      - name: Generate Docker image tag
-        id: docker-tag
-        run: |
-          BRANCH="${{ env.PYTORCH_BRANCH }}"
-          BRANCH_SAFE="${BRANCH//\//-}"
-          ROCM_VERSION="${{ steps.rocm.outputs.version }}"
-          OS=$(echo "${{ env.BASE_IMAGE }}" | tr -d ':' | tr '/' '-')
-
-          IMAGE_TAG="pytorch-${BRANCH_SAFE}-${{ steps.meta.outputs.pytorch_commit }}-rocm${ROCM_VERSION}-${OS}-py${{ env.PYTHON_VERSION }}-${{ env.AMDGPU_FAMILY }}"
-          IMAGE_TAG="${IMAGE_TAG//+/-}"
-          echo "tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
-          echo "Generated image tag: ${IMAGE_TAG}"
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERUSERNAME }}
-          password: ${{ secrets.DOCKERTOKEN }}
-
-      - name: Prepare build context
-        run: |
-          cp dockerfiles/Dockerfile pytorch-src/
-          mkdir -p pytorch-src/.github/scripts
-          cp .github/scripts/install_rocm_deps.sh pytorch-src/.github/scripts/
-          cp .github/scripts/install_pytorch_wheels.py pytorch-src/.github/scripts/
-
-      - name: Build Docker image
-        run: |
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.docker-tag.outputs.tag }}"
-
-          docker build \
-            --file pytorch-src/Dockerfile \
-            --tag "${IMAGE}" \
-            --label "pytorch.repo=${{ env.PYTORCH_REPO }}" \
-            --label "pytorch.branch=${{ env.PYTORCH_BRANCH }}" \
-            --label "pytorch.commit=${{ steps.meta.outputs.pytorch_commit }}" \
-            --build-arg "BASE_IMAGE=${{ env.BASE_IMAGE }}" \
-            --build-arg "ROCM_VERSION=${{ steps.rocm.outputs.version }}" \
-            --build-arg "AMDGPU_FAMILY=${{ env.AMDGPU_FAMILY }}" \
-            --build-arg "PYTHON_VERSION=${{ env.PYTHON_VERSION }}" \
-            --build-arg "INDEX_URL=${{ env.INDEX_URL }}" \
-            --build-arg "TORCH_VERSION_PREFIX=${{ steps.prefix.outputs.value }}" \
-            pytorch-src
-
-          echo "Docker image built successfully: ${IMAGE}"
-
-      - name: Get ROCm packages info
-        run: |
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.docker-tag.outputs.tag }}"
-          docker run --rm "${IMAGE}" pip freeze | grep -i rocm || echo "No ROCm packages found"
-
-      - name: Push Docker image
-        run: |
-          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.docker-tag.outputs.tag }}
-          echo "Docker image pushed successfully"
-
-      - name: Post-build summary
-        run: |
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.docker-tag.outputs.tag }}"
-          echo "## PyTorch Docker Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Image | \`${IMAGE}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| PyTorch Repo | ${{ env.PYTORCH_REPO }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| PyTorch Branch | ${{ env.PYTORCH_BRANCH }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| PyTorch Commit | ${{ steps.meta.outputs.pytorch_commit }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| AMDGPU Family | ${{ env.AMDGPU_FAMILY }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Python | ${{ env.PYTHON_VERSION }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| ROCm | ${{ steps.rocm.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Index URL | ${{ env.INDEX_URL }} |" >> $GITHUB_STEP_SUMMARY
+    uses: ./.github/workflows/_build_portable_linux_pytorch_docker.yml
+    secrets: inherit
+    with:
+      pytorch_repo: ${{ inputs.pytorch_repo || 'pytorch/pytorch' }}
+      pytorch_branch: ${{ inputs.pytorch_branch || 'nightly' }}
+      python_version: ${{ inputs.python_version || '3.12' }}
+      amdgpu_family: ${{ inputs.amdgpu_family || 'gfx94X-dcgpu' }}
+      rocm_version: ${{ inputs.rocm_version || 'auto' }}
+      index_url: ${{ inputs.index_url || 'https://rocm.nightlies.amd.com/v2-staging' }}
+      base_image: "ubuntu:24.04"
+      registry: docker.io
+      image_name: rocm/pytorch-private
+      job_display_name: "Build | ${{ inputs.amdgpu_family || 'gfx94X-dcgpu' }} | ${{ inputs.pytorch_repo || 'pytorch/pytorch' }}@${{ inputs.pytorch_branch || 'nightly' }}"
+      summary_title: "PyTorch Docker Build Summary"
