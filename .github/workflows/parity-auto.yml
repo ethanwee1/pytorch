@@ -1,8 +1,8 @@
 name: Parity Auto Trigger
 run-name: "Parity auto-trigger · pytorch/pytorch main"
 
-# Polls pytorch/pytorch main for commits where all CI consumed by
-# parity.yml has finished, and dispatches parity.yml once for that SHA
+# Polls completed pytorch/pytorch trunk.yml pushes on main and dispatches
+# parity.yml once for each SHA where all CI consumed by the report has finished,
 # covering every arch whose test shards actually ran on it.
 #
 # Arch participation is detected at the workflow_run level: if rocm-mi300
@@ -29,7 +29,7 @@ on:
   workflow_dispatch:
     inputs:
       max_commits:
-        description: 'How many of the most recent upstream commits to scan.'
+        description: 'How many of the most recent completed upstream trunk.yml pushes on main to scan.'
         required: false
         default: '50'
         type: string
@@ -112,7 +112,7 @@ jobs:
           echo "Upstream:       $UPSTREAM@$BRANCH"
           echo "Target ref:     $TARGET_REF"
           echo "Scope archs:    $ARCHS"
-          echo "Max commits:    $MAX_COMMITS"
+          echo "Max trunk runs: $MAX_COMMITS"
           echo "Max dispatches: $MAX_DISPATCHES"
           echo "Max age:        ${MAX_AGE_HOURS}h"
           echo "Dry run:        $DRY_RUN"
@@ -120,12 +120,24 @@ jobs:
           echo "Arch→workflows: $ARCH_WORKFLOW_REGEX_MAP"
           echo
 
-          # --- 1. Recent upstream commits --------------------------------------
-          COMMITS=$(gh api "repos/$UPSTREAM/commits?sha=$BRANCH&per_page=$MAX_COMMITS" \
-            --jq '.[] | "\(.sha) \(.commit.committer.date)"')
+          # --- 1. Recent completed upstream trunk pushes -----------------------
+          # Use trunk.yml as the candidate source instead of raw main commits.
+          # The parity report consumes trunk's CUDA/ROCm jobs, so a completed
+          # trunk push is the first point where a SHA can reasonably be ready.
+          COMMITS=$(gh api \
+            "repos/$UPSTREAM/actions/workflows/trunk.yml/runs?branch=$BRANCH&event=push&status=completed&per_page=$MAX_COMMITS" \
+            --jq '
+              reduce .workflow_runs[] as $run ({seen:{}, rows:[]};
+                if .seen[$run.head_sha] then .
+                else .seen[$run.head_sha] = true | .rows += [$run]
+                end
+              )
+              | .rows[]
+              | "\(.head_sha) \(.created_at)"
+            ')
 
           if [ -z "$COMMITS" ]; then
-            echo "::warning::No commits returned from $UPSTREAM@$BRANCH"
+            echo "::warning::No completed trunk.yml push runs returned from $UPSTREAM@$BRANCH"
             exit 0
           fi
 
@@ -147,7 +159,7 @@ jobs:
               'any(.[]; .displayTitle | contains($sha))' >/dev/null
           }
 
-          # --- 3. Walk commits, dispatch each ready unprocessed SHA ------------
+          # --- 3. Walk trunk SHAs, dispatch each ready unprocessed SHA ---------
           DISPATCHED_COUNT=0
           DISPATCHED_SUMMARY=""
           while IFS=' ' read -r SHA DATE; do
