@@ -134,6 +134,33 @@ def get_job_ids_by_prefix(wf, prefix):
     jobs = get_workflow_jobs(wf)
     return [str(j['id']) for j in jobs if prefix in j['name']]
 
+def matches_job_prefix(job_name, prefix):
+    """Match the exact CUDA job family without also matching -debug/-sm86 jobs."""
+    return job_name.startswith(f"{prefix} / ")
+
+def get_cuda_test_jobs(jobs, cuda_job_prefix):
+    """Return the CUDA test kind and jobs for either main or PR CI layouts."""
+    for test_kind in ("test-osdc", "test"):
+        test_jobs = [
+            j for j in jobs
+            if matches_job_prefix(j['name'], cuda_job_prefix)
+            and f"/ {test_kind} (" in j['name']
+        ]
+        if test_jobs:
+            return test_kind, test_jobs
+    return "test-osdc", []
+
+def get_cuda_inductor_test_jobs(jobs):
+    """Return the CUDA inductor test kind and jobs for either main or PR CI layouts."""
+    for test_kind in ("test-osdc", "test"):
+        test_jobs = [
+            j for j in jobs
+            if f"unit-test / inductor-test / {test_kind} (inductor," in j['name']
+        ]
+        if test_jobs:
+            return test_kind, test_jobs
+    return "test-osdc", []
+
 def download_logs(wf, test_log_list, test_folder, jobs=None):
     if wf is None: 
         raise Exception("wf is None!")
@@ -459,7 +486,7 @@ def main():
         "nightly": {"default": 6, "distributed": 3, "inductor": 2},
         "mi200": {"default": 6, "distributed": 3, "inductor": 2},
         "mi300": {"default": 6, "distributed": 3, "inductor": 2},
-        "mi355": {"default": 6, "distributed": 3, "inductor": 2},
+        "mi355": {"default": 10, "distributed": 4, "inductor": 2}, #trunk
         "navi31": {"default": 2, "distributed": 3, "inductor": 2},
     }
     rocm_job_prefix = rocm_job_prefixes[arch]
@@ -482,12 +509,12 @@ def main():
     if not args.no_cuda:
         print(f"Using CUDA workflows: {CUDAWorkflowNames}")
     print(f"Using ROCm job prefixes: {rocm_job_prefix}")
-    print(f"Using ROCm shard counts: {rocm_shards}")
+    print(f"Using initial ROCm shard counts (may be updated based on actual workflow used): {rocm_shards}")
 
     token = os.getenv('GITHUB_TOKEN', '...')
     global authentication_headers
     authentication_headers = {'Authorization': f'token {token}'}
-    if args.pr_id and args.sha1:
+    if (args.pr_id and args.sha1) or (not args.pr_id and not args.sha1):
         error_msg = "Error: Please provide either pr_id or sha!"
         print(error_msg)
         sys.exit(1)
@@ -498,7 +525,7 @@ def main():
         sha = args.sha1
         pr_id = None
     status = "success"
-    print(sha)
+    print(f"sha: {sha}")
 
     # When comparing two commits, prefix log filenames with short SHAs
     if args.baseline_sha:
@@ -546,9 +573,14 @@ def main():
         # If the ROCm distributed logs aren't found you might want to check the HUD for the correct tags
         # HUD link: https://hud.pytorch.org/hud/pytorch/pytorch/main/1?per_page=50&name_filter=rocm
         # Make sure "Hide unstable jobs" is unselected, in case ROCm jobs are marked as unstable
+    
+        if arch == "mi355":
+            dist_shards = 3 if not periodic_fallback_used else rocm_shards["distributed"]
+        else:
+            dist_shards = rocm_shards["distributed"]
+        print(f"Using final ROCm shard count {dist_shards} for distributed")
 
         if not args.artifacts_only:
-            dist_shards = rocm_shards["distributed"]
             test_log_list_rocm_distributed = [
                 [f"{current_prefix}rocm_dist{i}.txt", f"{dist_job_prefix} / test (distributed, {i}, {dist_shards}"]
                 for i in range(1, dist_shards + 1)
@@ -556,7 +588,6 @@ def main():
             download_logs(periodic_wf, test_log_list_rocm_distributed, folder_list[0])
 
         # Download artifacts
-        dist_shards = rocm_shards["distributed"]
         test_artifacts_list_rocm_distributed = [
             f"test-reports-test-distributed-{i}-{dist_shards}"
             for i in range(1, dist_shards + 1)
@@ -602,8 +633,13 @@ def main():
         # Download logs
         # If logs aren't found you might want to check the HUD for the correct tags
         # HUD link: https://hud.pytorch.org/hud/pytorch/pytorch/main/1?per_page=50&name_filter=rocm
-        if not args.artifacts_only:
+        if arch == "mi355":
+            default_shards = 6 if default_fallback_used else rocm_shards["default"]
+        else:
             default_shards = rocm_shards["default"]
+        print(f"Using final ROCm shard count {default_shards} for default")
+
+        if not args.artifacts_only:
             test_log_list_rocm_default = [
               [f"{current_prefix}rocm{i}.txt", f"{rocm_job_prefix['default']} / test (default, {i}, {default_shards}"]
               for i in range(1, default_shards + 1)
@@ -611,7 +647,6 @@ def main():
             download_logs(rocm_wf, test_log_list_rocm_default, folder_list[0])
 
         # Download artifacts
-        default_shards = rocm_shards["default"]
         test_artifacts_list_rocm_default = [
           f"test-reports-test-default-{i}-{default_shards}"
           for i in range(1, default_shards + 1)
@@ -639,9 +674,11 @@ def main():
 
         folder_list = get_or_create_test_folder(inductor_wf_rocm)
 
+        inductor_shards = rocm_shards["inductor"]
+        print(f"Using final ROCm shard count {inductor_shards} for inductor")
+    
         # Download logs
         if not args.artifacts_only:
-          inductor_shards = rocm_shards["inductor"]
           test_log_list_rocm_inductor = [
             [f"{current_prefix}rocm_inductor{i}.txt", f"{rocm_job_prefix['inductor']} / test (inductor, {i}, {inductor_shards}"]
             for i in range(1, inductor_shards + 1)
@@ -649,7 +686,6 @@ def main():
           download_logs(inductor_wf_rocm, test_log_list_rocm_inductor, folder_list[0])
 
         #Download artifacts
-        inductor_shards = rocm_shards["inductor"]
         test_artifacts_list_rocm_inductor = [
           f"test-reports-test-inductor-{i}-{inductor_shards}"
           for i in range(1, inductor_shards + 1)
@@ -664,7 +700,6 @@ def main():
 
     if not args.no_cuda:
         cuda_job_prefix = "linux-jammy-cuda13.0-py3.10-gcc11"
-        cuda_test_job_kind = "test-osdc"
         print("==========================================")
         print(f"Finding CUDA tests in workflow '{CUDAWorkflowNames['default']}' by sha: {sha}")
         print("==========================================")
@@ -675,6 +710,7 @@ def main():
         trunk_wf = None
         all_cuda_jobs = []
         cuda_test_jobs = []
+        cuda_test_job_kind = "test-osdc"
 
         trunk_runs = []
         params = {'per_page': 10}
@@ -689,14 +725,12 @@ def main():
 
         for run in trunk_runs:
             jobs = get_workflow_jobs(run)
-            test_jobs = [
-                j for j in jobs
-                if cuda_job_prefix in j['name'] and f'/ {cuda_test_job_kind} (' in j['name']
-            ]
+            test_kind, test_jobs = get_cuda_test_jobs(jobs, cuda_job_prefix)
             if test_jobs:
                 trunk_wf = run
                 all_cuda_jobs = jobs
                 cuda_test_jobs = test_jobs
+                cuda_test_job_kind = test_kind
                 print(f"Found CUDA test jobs in trunk run {run['id']}")
                 break
 
@@ -705,7 +739,7 @@ def main():
             # by the jobs API. Use check-runs API to find the actual run.
             print("No CUDA test jobs in any trunk run's jobs API, trying check-runs API...")
             check_runs = get_check_runs_for_commit(sha, cuda_job_prefix)
-            cuda_test_jobs = [cr for cr in check_runs if f'/ {cuda_test_job_kind} (' in cr['name']]
+            cuda_test_job_kind, cuda_test_jobs = get_cuda_test_jobs(check_runs, cuda_job_prefix)
             if cuda_test_jobs:
                 # Extract the actual workflow run ID from the check-run details URL
                 import re as _re
@@ -736,6 +770,7 @@ def main():
         cuda_job_ids = [str(j['id']) for j in cuda_test_jobs]
         cuda_artifact_substrings = [f"_{jid}" for jid in cuda_job_ids] if cuda_job_ids else ["nvidia.gpu"]
         print(f"Using CUDA job prefix: {cuda_job_prefix}")
+        print(f"Using CUDA test job kind: {cuda_test_job_kind}")
         print(f"Found {len(cuda_test_jobs)} CUDA test jobs matching prefix")
 
         folder_list = get_or_create_test_folder(trunk_wf)
@@ -762,11 +797,11 @@ def main():
 
         # Download artifacts
         test_artifacts_list_cuda_default = [
-          "test-reports-test-osdc-default-1-5",
-          "test-reports-test-osdc-default-2-5",
-          "test-reports-test-osdc-default-3-5",
-          "test-reports-test-osdc-default-4-5",
-          "test-reports-test-osdc-default-5-5",
+          f"test-reports-{cuda_test_job_kind}-default-1-5",
+          f"test-reports-{cuda_test_job_kind}-default-2-5",
+          f"test-reports-{cuda_test_job_kind}-default-3-5",
+          f"test-reports-{cuda_test_job_kind}-default-4-5",
+          f"test-reports-{cuda_test_job_kind}-default-5-5",
         ]
 
         test_artifacts_list_cuda = []
@@ -775,9 +810,9 @@ def main():
 
         if not args.exclude_distributed:
             test_artifacts_list_cuda_distributed = [
-              "test-reports-test-osdc-distributed-1-3",
-              "test-reports-test-osdc-distributed-2-3",
-              "test-reports-test-osdc-distributed-3-3",
+              f"test-reports-{cuda_test_job_kind}-distributed-1-3",
+              f"test-reports-{cuda_test_job_kind}-distributed-2-3",
+              f"test-reports-{cuda_test_job_kind}-distributed-3-3",
             ]
             test_artifacts_list_cuda += test_artifacts_list_cuda_distributed
 
@@ -802,26 +837,36 @@ def main():
             inductor_wf_cuda = download_workflow_run(created=args.created, max_pages=args.max_pages, workflow=CUDAWorkflowNames["inductor"], sha=inductor_sha, ignore_status=args.ignore_status, status=status, error_msg=error_msg)
             print(f"Using workflow '{CUDAWorkflowNames['inductor']}' with id:{inductor_wf_cuda['id']} for CUDA inductor")
 
+            inductor_cuda_jobs = get_workflow_jobs(inductor_wf_cuda)
+            cuda_inductor_test_job_kind, cuda_inductor_test_jobs = get_cuda_inductor_test_jobs(inductor_cuda_jobs)
+            cuda_inductor_job_ids = [str(j['id']) for j in cuda_inductor_test_jobs]
+            cuda_inductor_artifact_substrings = (
+                [f"_{jid}" for jid in cuda_inductor_job_ids]
+                if cuda_inductor_job_ids
+                else None
+            )
+            print(f"Using CUDA inductor test job kind: {cuda_inductor_test_job_kind}")
+            print(f"Found {len(cuda_inductor_test_jobs)} CUDA inductor test jobs")
+
             folder_list = get_or_create_test_folder(inductor_wf_cuda)
 
             # Download logs
             if not args.artifacts_only:
               test_log_list_cuda_inductor = [
-                ["cuda_inductor1.txt", "unit-test / inductor-test / test (inductor, 1, 2"],
-                ["cuda_inductor2.txt", "unit-test / inductor-test / test (inductor, 2, 2"],
+                ["cuda_inductor1.txt", f"unit-test / inductor-test / {cuda_inductor_test_job_kind} (inductor, 1, 2"],
+                ["cuda_inductor2.txt", f"unit-test / inductor-test / {cuda_inductor_test_job_kind} (inductor, 2, 2"],
               ]
-              download_logs(inductor_wf_cuda, test_log_list_cuda_inductor, folder_list[0])
+              download_logs(inductor_wf_cuda, test_log_list_cuda_inductor, folder_list[0], jobs=inductor_cuda_jobs)
 
             test_artifacts_list_cuda_inductor = [
-              "test-reports-test-inductor-1-2",
-              "test-reports-test-inductor-2-2"
+              f"test-reports-{cuda_inductor_test_job_kind}-inductor-1-2",
+              f"test-reports-{cuda_inductor_test_job_kind}-inductor-2-2"
             ]
-            # Inductor workflow is separate, use nvidia.gpu filter (no duplicate CUDA versions)
             download_artifacts(
                 inductor_wf_cuda,
                 test_artifacts_list_cuda_inductor,
                 test_folder=folder_list[1],
-                allowed_substrings=["nvidia.gpu"],
+                allowed_substrings=cuda_inductor_artifact_substrings,
             )
             os.chdir("..")
 

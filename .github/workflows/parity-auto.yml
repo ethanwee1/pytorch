@@ -31,7 +31,7 @@ on:
       max_commits:
         description: 'How many of the most recent upstream commits to scan.'
         required: false
-        default: '15'
+        default: '50'
         type: string
       max_dispatches:
         description: 'Maximum number of ready upstream commits to dispatch in one scan.'
@@ -51,7 +51,7 @@ on:
       arch_jobname_regex_map:
         description: 'JSON: arch → PCRE regex that matches the check-run names of that arch''s ROCm test shards on pytorch/pytorch. An arch is considered "ready" only when every check-run whose name matches has status=completed (so we wait for all test shards, not just workflow completion).'
         required: false
-        default: '{"mi355":"rocm.*mi355.*/ test \\(","mi300":"rocm.*mi300.*/ test \\(","mi200":"rocm.*(mi200|mi210).*/ test \\(","navi31":"rocm.*navi31.*/ test \\(","nightly":"rocm-nightly.*/ test \\("}'
+        default: '{"mi355":"rocm.*mi355.*/ test [(](default|distributed|inductor),","mi300":"rocm.*mi300.*/ test [(](default|distributed|inductor),","mi200":"rocm.*(mi200|mi210).*/ test [(](default|distributed|inductor),","navi31":"rocm.*navi31.*/ test [(]default,","nightly":"rocm-nightly.*/ test [(](default|distributed|inductor),"}'
         type: string
       arch_workflow_regex_map:
         description: 'JSON: arch → PCRE regex that matches workflow file paths for upstream ROCm workflows that mean this arch ran on the SHA. Missing workflows mean the arch is not expected for that commit.'
@@ -86,11 +86,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           UPSTREAM: pytorch/pytorch
           BRANCH: main
-          MAX_COMMITS: ${{ inputs.max_commits || '15' }}
+          MAX_COMMITS: ${{ inputs.max_commits || '50' }}
           MAX_DISPATCHES: ${{ inputs.max_dispatches || '10' }}
           MAX_AGE_HOURS: ${{ inputs.max_age_hours || '24' }}
           ARCHS_IN: ${{ inputs.archs || 'mi355, mi300, mi200' }}
-          ARCH_JOBNAME_REGEX_MAP: ${{ inputs.arch_jobname_regex_map || '{"mi355":"rocm.*mi355.*/ test \\(","mi300":"rocm.*mi300.*/ test \\(","mi200":"rocm.*(mi200|mi210).*/ test \\(","navi31":"rocm.*navi31.*/ test \\(","nightly":"rocm-nightly.*/ test \\("}' }}
+          ARCH_JOBNAME_REGEX_MAP: ${{ inputs.arch_jobname_regex_map || '{"mi355":"rocm.*mi355.*/ test [(](default|distributed|inductor),","mi300":"rocm.*mi300.*/ test [(](default|distributed|inductor),","mi200":"rocm.*(mi200|mi210).*/ test [(](default|distributed|inductor),","navi31":"rocm.*navi31.*/ test [(]default,","nightly":"rocm-nightly.*/ test [(](default|distributed|inductor),"}' }}
           ARCH_WORKFLOW_REGEX_MAP: ${{ inputs.arch_workflow_regex_map || '{"mi355":"(^|/)(trunk|rocm-mi355|periodic-rocm-mi355|inductor-rocm-mi355)[.]yml$","mi300":"(^|/)(rocm-mi300|periodic-rocm-mi300|inductor-rocm-mi300)[.]yml$","mi200":"(^|/)(trunk-rocm-sandbox|periodic-rocm-mi200)[.]yml$","navi31":"(^|/)(rocm-navi31|periodic-rocm-navi31|inductor-rocm-navi31)[.]yml$","nightly":"(^|/)rocm-nightly[.]yml$"}' }}
           TARGET_REF_IN: ${{ inputs.target_ref || '' }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
@@ -217,7 +217,7 @@ jobs:
                 <(echo "$ARCH_CHECK_RUNS"))
             done
 
-            CUDA_JOBNAME_REGEX='(linux-jammy-cuda13[.]0-py3[.]10-gcc11.*/ test-osdc [(](default|distributed),|unit-test / inductor-test / test [(]inductor,)'
+            CUDA_JOBNAME_REGEX='(linux-jammy-cuda13[.]0-py3[.]10-gcc11.*/ test-osdc [(](default|distributed),|unit-test / inductor-test / test-osdc [(]inductor,)'
             CUDA_CHECK_RUNS=$(echo "$ALL_CHECK_RUNS" | jq --arg rx "$CUDA_JOBNAME_REGEX" \
               '[.[] | select(.name | test($rx))]')
 
