@@ -479,7 +479,7 @@ def build_rows(args, archs, arch_data):
                 has_set2=has_set2,
             )
         for key in wf_keys:
-            out.append((key, [arch_stats[a][key] for a in archs]))
+            out.append((key, [arch_stats[a].get(key, 0) for a in archs]))
 
     out.append(('__section__', 'OVERALL'))
     ov_keys = overall_stats_keys(args.set1_name, args.set2_name, has_set2=any_has_set2)
@@ -493,7 +493,7 @@ def build_rows(args, archs, arch_data):
             args.set1_name, args.set2_name, has_set2=has_set2,
         )
     for key in ov_keys:
-        out.append((key, [arch_overall[a][key] for a in archs]))
+        out.append((key, [arch_overall[a].get(key, 0) for a in archs]))
     return out
 
 
