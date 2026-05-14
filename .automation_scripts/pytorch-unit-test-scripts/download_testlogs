@@ -150,6 +150,17 @@ def get_cuda_test_jobs(jobs, cuda_job_prefix):
             return test_kind, test_jobs
     return "test-osdc", []
 
+def get_cuda_inductor_test_jobs(jobs):
+    """Return the CUDA inductor test kind and jobs for either main or PR CI layouts."""
+    for test_kind in ("test-osdc", "test"):
+        test_jobs = [
+            j for j in jobs
+            if f"unit-test / inductor-test / {test_kind} (inductor," in j['name']
+        ]
+        if test_jobs:
+            return test_kind, test_jobs
+    return "test-osdc", []
+
 def download_logs(wf, test_log_list, test_folder, jobs=None):
     if wf is None: 
         raise Exception("wf is None!")
@@ -827,31 +838,29 @@ def main():
             print(f"Using workflow '{CUDAWorkflowNames['inductor']}' with id:{inductor_wf_cuda['id']} for CUDA inductor")
 
             inductor_cuda_jobs = get_workflow_jobs(inductor_wf_cuda)
-            cuda_inductor_test_jobs = [
-                j for j in inductor_cuda_jobs
-                if "unit-test / inductor-test / test-osdc (inductor," in j['name']
-            ]
+            cuda_inductor_test_job_kind, cuda_inductor_test_jobs = get_cuda_inductor_test_jobs(inductor_cuda_jobs)
             cuda_inductor_job_ids = [str(j['id']) for j in cuda_inductor_test_jobs]
             cuda_inductor_artifact_substrings = (
                 [f"_{jid}" for jid in cuda_inductor_job_ids]
                 if cuda_inductor_job_ids
                 else None
             )
-            print(f"Found {len(cuda_inductor_test_jobs)} CUDA inductor OSDC test jobs")
+            print(f"Using CUDA inductor test job kind: {cuda_inductor_test_job_kind}")
+            print(f"Found {len(cuda_inductor_test_jobs)} CUDA inductor test jobs")
 
             folder_list = get_or_create_test_folder(inductor_wf_cuda)
 
             # Download logs
             if not args.artifacts_only:
               test_log_list_cuda_inductor = [
-                ["cuda_inductor1.txt", "unit-test / inductor-test / test-osdc (inductor, 1, 2"],
-                ["cuda_inductor2.txt", "unit-test / inductor-test / test-osdc (inductor, 2, 2"],
+                ["cuda_inductor1.txt", f"unit-test / inductor-test / {cuda_inductor_test_job_kind} (inductor, 1, 2"],
+                ["cuda_inductor2.txt", f"unit-test / inductor-test / {cuda_inductor_test_job_kind} (inductor, 2, 2"],
               ]
               download_logs(inductor_wf_cuda, test_log_list_cuda_inductor, folder_list[0], jobs=inductor_cuda_jobs)
 
             test_artifacts_list_cuda_inductor = [
-              "test-reports-test-osdc-inductor-1-2",
-              "test-reports-test-osdc-inductor-2-2"
+              f"test-reports-{cuda_inductor_test_job_kind}-inductor-1-2",
+              f"test-reports-{cuda_inductor_test_job_kind}-inductor-2-2"
             ]
             download_artifacts(
                 inductor_wf_cuda,
