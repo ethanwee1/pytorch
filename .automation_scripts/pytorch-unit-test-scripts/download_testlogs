@@ -710,7 +710,6 @@ def main():
         trunk_wf = None
         all_cuda_jobs = []
         cuda_test_jobs = []
-        cuda_test_job_kind = "test-osdc"
 
         trunk_runs = []
         params = {'per_page': 10}
