@@ -31,17 +31,17 @@ on:
       max_commits:
         description: 'How many of the most recent completed upstream trunk.yml pushes on main to scan.'
         required: false
-        default: '50'
+        default: '200'
         type: string
       max_dispatches:
         description: 'Maximum number of ready upstream commits to dispatch in one scan.'
         required: false
-        default: '10'
+        default: '50'
         type: string
       max_age_hours:
         description: 'Skip commits older than this (avoid back-filling ancient SHAs).'
         required: false
-        default: '24'
+        default: '72'
         type: string
       archs:
         description: 'Architectures to consider (comma/space separated).'
@@ -51,12 +51,12 @@ on:
       arch_jobname_regex_map:
         description: 'JSON: arch → PCRE regex that matches the check-run names of that arch''s ROCm test shards on pytorch/pytorch. An arch is considered "ready" only when every check-run whose name matches has status=completed (so we wait for all test shards, not just workflow completion).'
         required: false
-        default: '{"mi355":"rocm.*mi355.*/ test [(](default|distributed|inductor),","mi300":"rocm.*mi300.*/ test [(](default|distributed|inductor),","mi200":"rocm.*(mi200|mi210).*/ test [(](default|distributed|inductor),","navi31":"rocm.*navi31.*/ test [(]default,","nightly":"rocm-nightly.*/ test [(](default|distributed|inductor),"}'
+        default: '{"mi355":"rocm.*mi355.*/ test [(](default|distributed|inductor),","mi300":"rocm.*mi300.*/ test [(](default|distributed|inductor),","mi200":"(rocm.*(mi200|mi210).*/ test [(](default|distributed|inductor),|linux-jammy-rocm-py3[.]10 / test [(](default|distributed|inductor),)","navi31":"rocm.*navi31.*/ test [(]default,","nightly":"rocm-nightly.*/ test [(](default|distributed|inductor),"}'
         type: string
       arch_workflow_regex_map:
         description: 'JSON: arch → PCRE regex that matches workflow file paths for upstream ROCm workflows that mean this arch ran on the SHA. Missing workflows mean the arch is not expected for that commit.'
         required: false
-        default: '{"mi355":"(^|/)(trunk|rocm-mi355|periodic-rocm-mi355|inductor-rocm-mi355)[.]yml$","mi300":"(^|/)(rocm-mi300|periodic-rocm-mi300|inductor-rocm-mi300)[.]yml$","mi200":"(^|/)(trunk-rocm-sandbox|periodic-rocm-mi200)[.]yml$","navi31":"(^|/)(rocm-navi31|periodic-rocm-navi31|inductor-rocm-navi31)[.]yml$","nightly":"(^|/)rocm-nightly[.]yml$"}'
+        default: '{"mi355":"(^|/)(trunk|rocm-mi355|periodic-rocm-mi355|inductor-rocm-mi355)[.]yml$","mi300":"(^|/)(rocm-mi300|periodic-rocm-mi300|inductor-rocm-mi300)[.]yml$","mi200":"(^|/)(trunk-rocm-sandbox|rocm-mi200|periodic-rocm-mi200|inductor-rocm-mi200)[.]yml$","navi31":"(^|/)(rocm-navi31|periodic-rocm-navi31|inductor-rocm-navi31)[.]yml$","nightly":"(^|/)rocm-nightly[.]yml$"}'
         type: string
       target_ref:
         description: 'Ref of this repo to dispatch parity.yml against. Leave blank to use this workflow run''s ref.'
@@ -86,12 +86,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           UPSTREAM: pytorch/pytorch
           BRANCH: main
-          MAX_COMMITS: ${{ inputs.max_commits || '50' }}
-          MAX_DISPATCHES: ${{ inputs.max_dispatches || '10' }}
-          MAX_AGE_HOURS: ${{ inputs.max_age_hours || '24' }}
+          MAX_COMMITS: ${{ inputs.max_commits || '200' }}
+          MAX_DISPATCHES: ${{ inputs.max_dispatches || '50' }}
+          MAX_AGE_HOURS: ${{ inputs.max_age_hours || '72' }}
           ARCHS_IN: ${{ inputs.archs || 'mi355, mi300, mi200' }}
-          ARCH_JOBNAME_REGEX_MAP: ${{ inputs.arch_jobname_regex_map || '{"mi355":"rocm.*mi355.*/ test [(](default|distributed|inductor),","mi300":"rocm.*mi300.*/ test [(](default|distributed|inductor),","mi200":"rocm.*(mi200|mi210).*/ test [(](default|distributed|inductor),","navi31":"rocm.*navi31.*/ test [(]default,","nightly":"rocm-nightly.*/ test [(](default|distributed|inductor),"}' }}
-          ARCH_WORKFLOW_REGEX_MAP: ${{ inputs.arch_workflow_regex_map || '{"mi355":"(^|/)(trunk|rocm-mi355|periodic-rocm-mi355|inductor-rocm-mi355)[.]yml$","mi300":"(^|/)(rocm-mi300|periodic-rocm-mi300|inductor-rocm-mi300)[.]yml$","mi200":"(^|/)(trunk-rocm-sandbox|periodic-rocm-mi200)[.]yml$","navi31":"(^|/)(rocm-navi31|periodic-rocm-navi31|inductor-rocm-navi31)[.]yml$","nightly":"(^|/)rocm-nightly[.]yml$"}' }}
+          ARCH_JOBNAME_REGEX_MAP: ${{ inputs.arch_jobname_regex_map || '{"mi355":"rocm.*mi355.*/ test [(](default|distributed|inductor),","mi300":"rocm.*mi300.*/ test [(](default|distributed|inductor),","mi200":"(rocm.*(mi200|mi210).*/ test [(](default|distributed|inductor),|linux-jammy-rocm-py3[.]10 / test [(](default|distributed|inductor),)","navi31":"rocm.*navi31.*/ test [(]default,","nightly":"rocm-nightly.*/ test [(](default|distributed|inductor),"}' }}
+          ARCH_WORKFLOW_REGEX_MAP: ${{ inputs.arch_workflow_regex_map || '{"mi355":"(^|/)(trunk|rocm-mi355|periodic-rocm-mi355|inductor-rocm-mi355)[.]yml$","mi300":"(^|/)(rocm-mi300|periodic-rocm-mi300|inductor-rocm-mi300)[.]yml$","mi200":"(^|/)(trunk-rocm-sandbox|rocm-mi200|periodic-rocm-mi200|inductor-rocm-mi200)[.]yml$","navi31":"(^|/)(rocm-navi31|periodic-rocm-navi31|inductor-rocm-navi31)[.]yml$","nightly":"(^|/)rocm-nightly[.]yml$"}' }}
           TARGET_REF_IN: ${{ inputs.target_ref || '' }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
         run: |
@@ -142,7 +142,7 @@ jobs:
           fi
 
           # --- 2. Already-dispatched SHAs in our repo --------------------------
-          # Pull last 200 parity runs. Run titles look like:
+          # Pull recent parity runs. Run titles look like:
           #   "<csv_name or SHA> · mi355, mi300, mi200"
           # Once any parity run exists for a SHA, we do not dispatch another
           # report for that SHA. This keeps the dashboard to one report per
@@ -150,7 +150,7 @@ jobs:
           EXISTING=$(gh run list \
             --repo "$GITHUB_REPOSITORY" \
             --workflow parity.yml \
-            --limit 200 \
+            --limit 1000 \
             --json displayTitle 2>/dev/null || echo '[]')
 
           sha_already_dispatched() {
@@ -223,15 +223,15 @@ jobs:
               REGEX=$(echo "$ARCH_JOBNAME_REGEX_MAP" | jq -r --arg a "$ARCH" '.[$a] // ""')
               [ -z "$REGEX" ] && continue
               ARCH_CHECK_RUNS=$(echo "$ALL_CHECK_RUNS" | jq --arg rx "$REGEX" \
-                '[.[] | select(.name | test($rx))]')
+                '[.[] | select((.name | test($rx)) and (.name | test("mem_leak_check|rerun_disabled_tests") | not))]')
               CHECK_RUNS=$(jq -s 'add | unique_by(.name)' \
                 <(echo "$CHECK_RUNS") \
                 <(echo "$ARCH_CHECK_RUNS"))
             done
 
-            CUDA_JOBNAME_REGEX='(linux-jammy-cuda13[.]0-py3[.]10-gcc11.*/ test-osdc [(](default|distributed),|unit-test / inductor-test / test-osdc [(]inductor,)'
+            CUDA_JOBNAME_REGEX='(linux-jammy-cuda13[.]0-py3[.]10-gcc11 / (test-osdc|test) [(](default|distributed),|unit-test / inductor-test / (test-osdc|test) [(]inductor,)'
             CUDA_CHECK_RUNS=$(echo "$ALL_CHECK_RUNS" | jq --arg rx "$CUDA_JOBNAME_REGEX" \
-              '[.[] | select(.name | test($rx))]')
+              '[.[] | select((.name | test($rx)) and (.name | test("mem_leak_check|rerun_disabled_tests") | not))]')
 
             if [ "$(echo "$CHECK_RUNS" | jq 'length')" -eq 0 ]; then
               echo "[$SHORT] $DATE  ROCm workflows ran ($RUN_ARCHS) but no parity check-runs yet — skip"
