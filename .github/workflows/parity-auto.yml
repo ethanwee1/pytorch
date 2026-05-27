@@ -87,19 +87,29 @@ jobs:
 
           # Completed trunk workflow runs are the readiness source for this PR:
           # no separate check-run regex matching is needed for trunk-only default
-          # reports, and pagination keeps MAX_COMMITS truthful above 100.
-          COMMITS=$(gh api --paginate \
-            "repos/$UPSTREAM/actions/workflows/trunk.yml/runs?branch=$BRANCH&event=push&status=completed&per_page=100" \
-            --jq '.workflow_runs[] | {head_sha, created_at}' |
-            jq -rs --arg max "$MAX_COMMITS" '
-              reduce .[] as $run ({seen:{}, rows:[]};
-                if .seen[$run.head_sha] then .
-                else .seen[$run.head_sha] = true | .rows += [$run]
-                end
-              )
-              | .rows[:($max | tonumber)][]
-              | "\(.head_sha) \(.created_at)"
-            ')
+          # reports. Page manually so MAX_COMMITS can exceed GitHub's per_page
+          # cap without walking the entire workflow history.
+          COMMITS_JSON='[]'
+          PAGE=1
+          while [ "$(echo "$COMMITS_JSON" | jq 'length')" -lt "$MAX_COMMITS" ]; do
+            PAGE_RUNS=$(gh api \
+              "repos/$UPSTREAM/actions/workflows/trunk.yml/runs?branch=$BRANCH&event=push&status=completed&per_page=100&page=$PAGE" \
+              --jq '.workflow_runs | map({head_sha, created_at})')
+            if [ "$(echo "$PAGE_RUNS" | jq 'length')" -eq 0 ]; then
+              break
+            fi
+            COMMITS_JSON=$(jq -s --arg max "$MAX_COMMITS" '
+              (.[0] + .[1]) as $runs
+              | reduce $runs[] as $run ({seen:{}, rows:[]};
+                  if .seen[$run.head_sha] then .
+                  else .seen[$run.head_sha] = true | .rows += [$run]
+                  end
+                )
+              | .rows[:($max | tonumber)]
+            ' <(echo "$COMMITS_JSON") <(echo "$PAGE_RUNS"))
+            PAGE=$((PAGE + 1))
+          done
+          COMMITS=$(echo "$COMMITS_JSON" | jq -r '.[] | "\(.head_sha) \(.created_at)"')
 
           if [ -z "$COMMITS" ]; then
             echo "::warning::No completed trunk.yml push runs returned from $UPSTREAM@$BRANCH"
