@@ -58,7 +58,6 @@ jobs:
           UPSTREAM: pytorch/pytorch
           BRANCH: main
           PARITY_ARCH: mi355
-          AUTOPARITY_PREFIX: autoparity
           MAX_COMMITS: ${{ github.event_name == 'pull_request' && '20' || inputs.max_commits || '200' }}
           MAX_DISPATCHES: ${{ github.event_name == 'pull_request' && '5' || inputs.max_dispatches || '50' }}
           MAX_AGE_HOURS: ${{ inputs.max_age_hours || '72' }}
@@ -116,18 +115,20 @@ jobs:
             exit 0
           fi
 
-          # Deduplicate only auto-parity-created parity runs. Manual parity.yml
-          # runs should not suppress automation for a SHA.
+          # Deduplicate auto-parity-created parity runs without changing
+          # parity.yml's own output naming. New auto-dispatched runs are created
+          # by github-actions[bot]; keep the old autoparity-* title match so
+          # runs created before this workflow stopped passing csv_name still
+          # suppress duplicate dispatches.
           EXISTING=$(gh api --paginate \
             "repos/$GITHUB_REPOSITORY/actions/workflows/parity.yml/runs?event=workflow_dispatch&created=%3E%3D$SINCE&per_page=100" \
-            --jq '.workflow_runs[] | {display_title, created_at}' |
-            jq -s --arg prefix "${AUTOPARITY_PREFIX}-" \
-              '[.[] | select((.display_title // "") | startswith($prefix))]')
+            --jq '.workflow_runs[] | {display_title, created_at, actor: .actor.login}' |
+            jq -s '.')
 
           sha_already_dispatched() {
             local sha="$1"
             echo "$EXISTING" | jq -e --arg sha "$sha" \
-              'any(.[]; (.display_title // "") | contains($sha))' >/dev/null
+              'any(.[]; ((.display_title // "") | contains($sha)) and (((.display_title // "") | startswith("autoparity-")) or (.actor == "github-actions[bot]")))' >/dev/null
           }
 
           DISPATCHED_COUNT=0
@@ -147,7 +148,6 @@ jobs:
               continue
             fi
 
-            CSV_NAME="${AUTOPARITY_PREFIX}-$(date -u +%Y%m%d)-$SHA"
             echo "[$SHORT] completed trunk run at $DATE - ready for $PARITY_ARCH default parity"
 
             if [ "$DRY_RUN" = "true" ]; then
@@ -159,8 +159,7 @@ jobs:
                 -f sha="$SHA" \
                 -f arch="$PARITY_ARCH" \
                 -f exclude_distributed=true \
-                -f exclude_inductor=true \
-                -f csv_name="$CSV_NAME"
+                -f exclude_inductor=true
             fi
 
             DISPATCHED_COUNT=$((DISPATCHED_COUNT + 1))
