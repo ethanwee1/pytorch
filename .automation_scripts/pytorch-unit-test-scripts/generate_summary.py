@@ -3,6 +3,7 @@
 import argparse
 import csv
 import os
+import re
 import sys
 
 
@@ -289,10 +290,12 @@ def collect_failed_tests(arch_data, archs, s1_name, s2_name):
                     'test_name': r.get('test_name', ''),
                     'test_config': r.get('test_config', ''),
                     f'shard_{s1_name}': r.get(f'shard_{s1_name}', ''),
+                    f'job_url_{s1_name}': r.get(f'job_url_{s1_name}', ''),
                     f'status_{s1_name}': s1,
                 }
                 if has_set2:
                     entry[f'shard_{s2_name}'] = r.get(f'shard_{s2_name}', '')
+                    entry[f'job_url_{s2_name}'] = r.get(f'job_url_{s2_name}', '')
                     entry[f'status_{s2_name}'] = s2
                 failed.append(entry)
 
@@ -418,6 +421,7 @@ def load_flaky_tests_as_log_failures(filepaths):
                     'category': 'FLAKY',
                     'reason': f'{test_class}::{test_name}' if test_class else test_name,
                     'exit_codes': '',
+                    'job_url': row.get('job_url', ''),
                 })
     return entries
 
@@ -691,6 +695,16 @@ def write_markdown(rows, archs, output_path, failed_tests=None, s1_name='set1', 
                _norm_test_file(t.get('test_file', '')))
         return _format_test_shards(shard_lookup.get(key, ''))
 
+    def _job_id_link(url):
+        if not url:
+            return ''
+        # Use the job id (digits after "/job/" in the URL) as the visible
+        # link label so the cell reads e.g. [76905282313](...).
+        m = re.search(r'/job/(\d+)', url)
+        if not m:
+            return ''
+        return f'[{m.group(1)}]({url})'
+
     cols = ['Arch', 'Test Config', 'Test File', 'Test Class', 'Test Name',
             f'Job-Level Shard ({s1_name})',
             f'Test-Level Shard ({s1_name})']
@@ -701,6 +715,9 @@ def write_markdown(rows, archs, output_path, failed_tests=None, s1_name='set1', 
     if has_set2:
         cols.append(f'Status ({s2_name})')
     cols.append('Also Failing In')
+    cols.append(f'Job ID ({s1_name})')
+    if has_set2:
+        cols.append(f'Job ID ({s2_name})')
 
     if s1_failed:
         lines.append(f'### FAILED TESTS ({len(s1_failed)})')
@@ -718,7 +735,11 @@ def write_markdown(rows, archs, output_path, failed_tests=None, s1_name='set1', 
             line += f" | {t[f'status_{s1_name}']}"
             if has_set2:
                 line += f" | {t.get(f'status_{s2_name}', '')}"
-            line += f" | {t.get('also_failing_in', '')} |"
+            line += f" | {t.get('also_failing_in', '')}"
+            line += f" | {_job_id_link(t.get(f'job_url_{s1_name}', ''))}"
+            if has_set2:
+                line += f" | {_job_id_link(t.get(f'job_url_{s2_name}', ''))}"
+            line += ' |'
             lines.append(line)
         lines.append('')
     else:
@@ -748,8 +769,8 @@ def write_markdown(rows, archs, output_path, failed_tests=None, s1_name='set1', 
             lines.append('These test failures were detected from CI log files but have no XML report')
             lines.append('(typically due to timeouts, crashes, or process kills).')
             lines.append('')
-            lines.append('| Arch | Platform | Test Config | Test File | Test Class | Test Name | Job-Level Shard | Test-Level Shard | Category | Also Failing In |')
-            lines.append('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |')
+            lines.append('| Arch | Platform | Test Config | Test File | Test Class | Test Name | Job-Level Shard | Test-Level Shard | Category | Also Failing In | Job ID |')
+            lines.append('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |')
             for lf in rocm_log_failures:
                 test_class, test_name = _parse_log_failure_names(lf)
                 lines.append(
@@ -759,7 +780,8 @@ def write_markdown(rows, archs, output_path, failed_tests=None, s1_name='set1', 
                     f"| {lf.get('job_shard', '')} "
                     f"| {lf.get('test_shard', lf.get('shard', ''))} "
                     f"| {lf.get('category', '')} "
-                    f"| {lf.get('also_failing_in', '')} |"
+                    f"| {lf.get('also_failing_in', '')} "
+                    f"| {_job_id_link(lf.get('job_url', ''))} |"
                 )
             lines.append('')
 

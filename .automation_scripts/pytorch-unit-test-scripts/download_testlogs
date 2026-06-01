@@ -90,6 +90,14 @@ def write_test_log_to_file(filename, test_key, jobs, sha):
     with open(filename, "w", encoding="utf-8") as f:
         f.write(response.text)
 
+    # Save the upstream pytorch CI job's page URL next to the log so
+    # detect_log_failures.py can later surface it as a link in the
+    # LOG-BASED FAILURES table of the parity summary.
+    job_url = js[0].get('html_url', '')
+    if job_url:
+        with open(filename + ".job_url", "w", encoding="utf-8") as f:
+            f.write(job_url)
+
 def get_workflow_jobs(wf):
     """Get all jobs for a workflow run."""
     if wf is None:
@@ -239,11 +247,13 @@ def _shorten_unzipped_dirs():
       unzipped-test-reports-runattempt1-test-default-1-6-linux.rocm.gpu.gfx942.1_68613413431.zip
       unzipped-test-reports-runattempt1-test-osdc-default-1-5-mt-l-x86aavx2-29-113-l4_73385044118.zip
     to:
-      test-default-1-6
-      test-default-1-5
+      test-default-1-6_68613413431
+      test-default-1-5_73385044118
 
     Preserves the 'test-<config>' prefix so that summarize_xml_testreports.py
-    can still detect workflow type via substring matching.
+    can still detect workflow type via substring matching. The trailing
+    '_<jobid>' is the upstream pytorch CI job id, used to link to the
+    failing job from the parity summary.
     """
     from pathlib import Path
     for d in sorted(Path(".").glob("unzipped-*")):
@@ -252,6 +262,13 @@ def _shorten_unzipped_dirs():
         m = re.search(r'test-(?:osdc-)?(default|distributed|inductor)-(\d+)-(\d+)', d.name)
         if m:
             short_name = f"test-{m.group(1)}-{m.group(2)}-{m.group(3)}"
+            # The original artifact name ends with "_<jobid>.zip" where
+            # <jobid> is the upstream pytorch CI job id (e.g.
+            # ..._68613413431.zip). Carry it onto short_name so
+            # summarize_xml_testreports.py can link to that job.
+            job_id_match = re.search(r'_(\d{6,})\.zip$', d.name)
+            if job_id_match:
+                short_name += f"_{job_id_match.group(1)}"
             if not Path(short_name).exists():
                 d.rename(short_name)
                 print(f"  Renamed {d.name} -> {short_name}")
@@ -296,6 +313,9 @@ def download_xml_files(workflow_run_id, workflow_run_attempts, prefixes=[], allo
             unzip(path)
 
     _shorten_unzipped_dirs()
+
+    with open("_wf_run_id", "w") as f:
+        f.write(str(workflow_run_id))
 
     # Delete raw zip files now that contents are extracted
     for path in artifact_paths:
