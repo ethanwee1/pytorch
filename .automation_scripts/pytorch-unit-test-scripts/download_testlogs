@@ -259,16 +259,37 @@ def _shorten_unzipped_dirs():
                 print(f"  WARNING: {short_name} already exists, keeping {d.name}")
 
 def download_xml_files(workflow_run_id, workflow_run_attempts, prefixes=[], allowed_substrings=None):
-    # Get from S3 artifacts
+    # Get from S3 artifacts.
+    #
+    # When an upstream run is re-run, GitHub only re-executes the jobs that
+    # failed; jobs that already succeeded are not re-run and keep their
+    # artifacts under the attempt in which they ran. So a run whose current
+    # attempt is N can still have test reports sitting under an earlier
+    # attempt's S3 path (e.g. CUDA test-osdc shards uploaded on attempt 1
+    # while a retried ROCm shard lives under attempt 2). Searching only the
+    # latest attempt misses those carried-over artifacts. For each prefix
+    # (one shard) try attempts from the latest down to 1 and take the first
+    # (highest) attempt that has it, mirroring the GHA fallback's
+    # "prefer highest attempt per shard" behaviour.
     artifact_paths = []
+    try:
+        max_attempt = int(workflow_run_attempts)
+    except (TypeError, ValueError):
+        max_attempt = 1
+    if max_attempt < 1:
+        max_attempt = 1
     for prefix in prefixes:
-        print("Trying to download S3 artifacts for workflow_run_attempt {} with prefix {}".format(workflow_run_attempts, prefix))
-        artifact_paths += download_s3_artifacts(
-            prefix,
-            workflow_run_id,
-            workflow_run_attempts,
-            allowed_substrings=allowed_substrings,
-        )
+        for attempt in range(max_attempt, 0, -1):
+            print("Trying to download S3 artifacts for workflow_run_attempt {} with prefix {}".format(attempt, prefix))
+            found = download_s3_artifacts(
+                prefix,
+                workflow_run_id,
+                attempt,
+                allowed_substrings=allowed_substrings,
+            )
+            if found:
+                artifact_paths += found
+                break
 
     # Filter out rerun_disabled_tests artifacts (same prefix, different job)
     before = len(artifact_paths)
