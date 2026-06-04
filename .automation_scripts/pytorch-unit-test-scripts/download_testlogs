@@ -104,19 +104,29 @@ def write_test_log_to_file(filename, test_key, jobs, sha):
         with open(filename + ".job_url", "w", encoding="utf-8") as f:
             f.write(job_url)
 
-def get_workflow_jobs(wf):
-    """Get all jobs for a workflow run."""
+def get_workflow_jobs(wf, all_attempts=False):
+    """Get all jobs for a workflow run.
+
+    By default GitHub returns only the latest attempt's jobs. Pass
+    all_attempts=True to include jobs from every run attempt: when a run is
+    re-run, shards that already passed are carried over (not re-executed) and
+    their test-report artifacts keep the job ID from the attempt that produced
+    them, so artifact matching by job ID must consider all attempts.
+    """
     if wf is None:
         raise Exception("wf is None!")
     page_size = 100 #max allowed by Github API
-    response = requests.get( wf['jobs_url'], headers=authentication_headers, params={'per_page':page_size} )
+    base_params = {'per_page': page_size}
+    if all_attempts:
+        base_params['filter'] = 'all'
+    response = requests.get( wf['jobs_url'], headers=authentication_headers, params=base_params )
     response_json = response.json()
     jobs = response_json["jobs"]
 
     if response_json['total_count'] > page_size:
         import math
         for i in range(2, math.ceil(response_json['total_count']/page_size) + 1):
-            response = requests.get( wf['jobs_url'], headers=authentication_headers, params={'per_page':page_size, 'page':i} )
+            response = requests.get( wf['jobs_url'], headers=authentication_headers, params={**base_params, 'page':i} )
             jobs += response.json()["jobs"]
     return jobs
 
@@ -785,7 +795,13 @@ def main():
 
         print(f"Using workflow '{CUDAWorkflowNames['default']}' with id:{trunk_wf['id']} for CUDA default")
 
-        cuda_job_ids = [str(j['id']) for j in cuda_test_jobs]
+        # Match artifacts by job ID across ALL run attempts. If trunk was
+        # re-run, CUDA shards that passed earlier are carried over and their
+        # S3 reports keep the original attempt's job ID; filtering only by the
+        # latest attempt's IDs would silently drop them (missing CUDA columns).
+        all_attempt_cuda_jobs = get_workflow_jobs(trunk_wf, all_attempts=True)
+        _, all_attempt_cuda_test_jobs = get_cuda_test_jobs(all_attempt_cuda_jobs, cuda_job_prefix)
+        cuda_job_ids = sorted({str(j['id']) for j in (cuda_test_jobs + all_attempt_cuda_test_jobs)})
         cuda_artifact_substrings = [f"_{jid}" for jid in cuda_job_ids] if cuda_job_ids else ["nvidia.gpu"]
         print(f"Using CUDA job prefix: {cuda_job_prefix}")
         print(f"Using CUDA test job kind: {cuda_test_job_kind}")
@@ -847,7 +863,11 @@ def main():
 
             inductor_cuda_jobs = get_workflow_jobs(inductor_wf_cuda)
             cuda_inductor_test_job_kind, cuda_inductor_test_jobs = get_cuda_inductor_test_jobs(inductor_cuda_jobs)
-            cuda_inductor_job_ids = [str(j['id']) for j in cuda_inductor_test_jobs]
+            # Same carried-over-on-rerun reasoning as CUDA default above: match
+            # artifacts by job ID across all attempts of the inductor run.
+            all_attempt_inductor_jobs = get_workflow_jobs(inductor_wf_cuda, all_attempts=True)
+            _, all_attempt_inductor_test_jobs = get_cuda_inductor_test_jobs(all_attempt_inductor_jobs)
+            cuda_inductor_job_ids = sorted({str(j['id']) for j in (cuda_inductor_test_jobs + all_attempt_inductor_test_jobs)})
             cuda_inductor_artifact_substrings = (
                 [f"_{jid}" for jid in cuda_inductor_job_ids]
                 if cuda_inductor_job_ids
