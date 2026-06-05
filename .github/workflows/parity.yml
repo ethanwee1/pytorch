@@ -280,7 +280,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ needs.setup-matrix.outputs.prefix }}-results-${{ matrix.arch }}
-          retention-days: 1
           path: ${{ steps.upload-paths.outputs.paths }}
 
   summarize:
