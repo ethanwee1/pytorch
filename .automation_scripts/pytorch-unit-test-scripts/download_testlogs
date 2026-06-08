@@ -479,6 +479,70 @@ def parse_args():
 # Authenticated users get 5000 requests/day
 # Check rate-limit without penalty: curl -H "Authorization: token $GITHUB_TOKEN" -I https://api.github.com/users/octocat
 
+def resolve_full_trunk_run(sha, cuda_job_prefix, status='success', ignore_status=False):
+    """Resolve the canonical trunk.yml run for a SHA.
+
+    Upstream can produce more than one trunk.yml run for the same commit (for
+    example a reduced re-trigger that omits CUDA and only re-runs a subset of
+    the ROCm shards). The parity report has to read ROCm and CUDA from the
+    SAME full trunk push, otherwise it pairs a partial test set on one side
+    with the full set on the other and most columns come back empty. Only the
+    full push runs the CUDA test jobs, so anchor on the run that contains them
+    (falling back to the newest completed run when none can be found).
+
+    Returns (trunk_wf, cuda_test_jobs, cuda_test_kind, all_cuda_jobs).
+    """
+    params = {'per_page': 10, 'head_sha': sha}
+    if not ignore_status and status:
+        params['status'] = status
+    resp = requests.get(
+        f"https://api.github.com/repos/pytorch/pytorch/actions/workflows/{CUDAWorkflowNames['default']}.yml/runs",
+        headers=authentication_headers, params=params,
+    )
+    trunk_runs = resp.json().get('workflow_runs', [])
+
+    trunk_wf = None
+    cuda_test_jobs = []
+    cuda_test_kind = CUDA_TEST_KINDS[0]
+    all_cuda_jobs = []
+
+    for run in trunk_runs:
+        jobs = get_workflow_jobs(run)
+        kind, test_jobs = get_cuda_test_jobs(jobs, cuda_job_prefix)
+        if test_jobs:
+            trunk_wf = run
+            all_cuda_jobs = jobs
+            cuda_test_jobs = test_jobs
+            cuda_test_kind = kind
+            print(f"Found CUDA test jobs in trunk run {run['id']}")
+            break
+
+    if not cuda_test_jobs and trunk_runs:
+        # CUDA jobs may live in a run the jobs API does not surface (e.g. a
+        # reusable workflow); the check-runs API resolves the actual run.
+        print("No CUDA test jobs in any trunk run's jobs API, trying check-runs API...")
+        check_runs = get_check_runs_for_commit(sha, cuda_job_prefix)
+        cuda_test_kind, cuda_test_jobs = get_cuda_test_jobs(check_runs, cuda_job_prefix)
+        if cuda_test_jobs:
+            run_match = re.search(r'/runs/(\d+)/', cuda_test_jobs[0].get('details_url', ''))
+            if run_match:
+                actual_run_id = int(run_match.group(1))
+                trunk_wf = next((r for r in trunk_runs if r['id'] == actual_run_id), None)
+                if trunk_wf is None:
+                    resp = requests.get(
+                        f"https://api.github.com/repos/pytorch/pytorch/actions/runs/{actual_run_id}",
+                        headers=authentication_headers,
+                    )
+                    trunk_wf = resp.json()
+                print(f"CUDA test jobs are in trunk run {trunk_wf['id']} (found via check-runs)")
+            all_cuda_jobs = list(cuda_test_jobs)
+
+    if trunk_wf is None and trunk_runs:
+        trunk_wf = trunk_runs[0]
+
+    return trunk_wf, cuda_test_jobs, cuda_test_kind, all_cuda_jobs
+
+
 def main():
     global args
     args = parse_args()
@@ -550,6 +614,32 @@ def main():
         current_prefix = ""
         baseline_prefix = "baseline_"
 
+    # Resolve the canonical trunk run for this SHA exactly once, so every
+    # section that reads from trunk (ROCm default, the ROCm distributed ->
+    # trunk fallback, and CUDA) shares the SAME full trunk push. Without this,
+    # ROCm picked the newest completed trunk run while CUDA picked the run
+    # carrying CUDA jobs; when upstream had a reduced re-trigger for the SHA
+    # those were different runs, pairing a partial set on one side with the
+    # full set on the other (mostly-empty columns).
+    arch_uses_trunk = "trunk" in ROCmWorkflowNames.values()
+    fallback_uses_trunk = any(
+        fb.get("workflow") == "trunk"
+        for fb in arch_config.get("fallbacks", {}).values()
+    )
+    trunk_full_wf = None
+    trunk_cuda_test_jobs = []
+    trunk_cuda_test_kind = CUDA_TEST_KINDS[0]
+    trunk_all_cuda_jobs = []
+    if (not args.no_cuda) or arch_uses_trunk or fallback_uses_trunk:
+        print("==============================================")
+        print(f"Resolving canonical trunk run for sha: {sha}")
+        print("==============================================")
+        trunk_full_wf, trunk_cuda_test_jobs, trunk_cuda_test_kind, trunk_all_cuda_jobs = \
+            resolve_full_trunk_run(sha, PARITY_CONFIG["cuda"]["job_prefix"], status, args.ignore_status)
+        if trunk_full_wf is not None:
+            print(f"Using trunk run {trunk_full_wf['id']} as the canonical run for this SHA "
+                  f"({len(trunk_cuda_test_jobs)} CUDA test jobs); ROCm-trunk and CUDA share it")
+
     if not args.exclude_distributed and not args.no_rocm:
         periodic_sha = sha
         print("==============================================")
@@ -567,7 +657,12 @@ def main():
         if periodic_wf is None and arch in periodic_fallbacks:
             fallback_wf, fallback_prefix = periodic_fallbacks[arch]
             print(f"Distributed not found in {ROCmWorkflowNames['distributed']}, falling back to {fallback_wf}")
-            periodic_wf = download_workflow_run(created=args.created, max_pages=args.max_pages, workflow=fallback_wf, sha=periodic_sha, ignore_status=args.ignore_status, status=status, error_msg=error_msg)
+            if fallback_wf == "trunk" and trunk_full_wf is not None:
+                # Reuse the canonical trunk run so distributed reads from the
+                # same full push as CUDA (see resolve_full_trunk_run).
+                periodic_wf = trunk_full_wf
+            else:
+                periodic_wf = download_workflow_run(created=args.created, max_pages=args.max_pages, workflow=fallback_wf, sha=periodic_sha, ignore_status=args.ignore_status, status=status, error_msg=error_msg)
             periodic_fallback_used = True
         if periodic_wf is None:
             raise Exception(error_msg)
@@ -622,10 +717,16 @@ def main():
         #https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-repository
         error_msg="Error: rocm workflow not found in scanned workflow runs. Try increasing max_pages."
         default_fallback_used = False
-        try:
-            rocm_wf = download_workflow_run(created=args.created, max_pages=args.max_pages, workflow=ROCmWorkflowNames["default"], sha=rocm_sha, ignore_status=args.ignore_status, status=status, error_msg=error_msg)
-        except (IndexError, Exception):
-            rocm_wf = None
+        if ROCmWorkflowNames["default"] == "trunk" and trunk_full_wf is not None:
+            # Read ROCm default from the canonical trunk run rather than the
+            # newest completed one, so it matches the CUDA side (see
+            # resolve_full_trunk_run).
+            rocm_wf = trunk_full_wf
+        else:
+            try:
+                rocm_wf = download_workflow_run(created=args.created, max_pages=args.max_pages, workflow=ROCmWorkflowNames["default"], sha=rocm_sha, ignore_status=args.ignore_status, status=status, error_msg=error_msg)
+            except (IndexError, Exception):
+                rocm_wf = None
         default_fallbacks = _fallbacks_for("default")
         if rocm_wf is None and arch in default_fallbacks:
             fallback_wf, fallback_prefix = default_fallbacks[arch]
@@ -733,63 +834,13 @@ def main():
         print(f"Finding CUDA tests in workflow '{CUDAWorkflowNames['default']}' by sha: {sha}")
         print("==========================================")
 
-        # There can be multiple trunk runs for the same SHA. Find the one
-        # that actually contains CUDA test jobs by checking each run's jobs
-        # list, falling back to check-runs API to resolve the correct run.
-        trunk_wf = None
-        all_cuda_jobs = []
-        cuda_test_jobs = []
-
-        trunk_runs = []
-        params = {'per_page': 10}
-        if not args.ignore_status:
-            params['status'] = status
-        params['head_sha'] = sha
-        resp = requests.get(
-            f"https://api.github.com/repos/pytorch/pytorch/actions/workflows/{CUDAWorkflowNames['default']}.yml/runs",
-            headers=authentication_headers, params=params,
-        )
-        trunk_runs = resp.json().get('workflow_runs', [])
-
-        for run in trunk_runs:
-            jobs = get_workflow_jobs(run)
-            test_kind, test_jobs = get_cuda_test_jobs(jobs, cuda_job_prefix)
-            if test_jobs:
-                trunk_wf = run
-                all_cuda_jobs = jobs
-                cuda_test_jobs = test_jobs
-                cuda_test_job_kind = test_kind
-                print(f"Found CUDA test jobs in trunk run {run['id']}")
-                break
-
-        if not cuda_test_jobs and trunk_runs:
-            # CUDA test jobs may be in a different run than the one returned
-            # by the jobs API. Use check-runs API to find the actual run.
-            print("No CUDA test jobs in any trunk run's jobs API, trying check-runs API...")
-            check_runs = get_check_runs_for_commit(sha, cuda_job_prefix)
-            cuda_test_job_kind, cuda_test_jobs = get_cuda_test_jobs(check_runs, cuda_job_prefix)
-            if cuda_test_jobs:
-                # Extract the actual workflow run ID from the check-run details URL
-                import re as _re
-                run_match = _re.search(r'/runs/(\d+)/', cuda_test_jobs[0].get('details_url', ''))
-                if run_match:
-                    actual_run_id = int(run_match.group(1))
-                    # Find or fetch the correct workflow run
-                    for run in trunk_runs:
-                        if run['id'] == actual_run_id:
-                            trunk_wf = run
-                            break
-                    if trunk_wf is None:
-                        resp = requests.get(
-                            f"https://api.github.com/repos/pytorch/pytorch/actions/runs/{actual_run_id}",
-                            headers=authentication_headers,
-                        )
-                        trunk_wf = resp.json()
-                    print(f"CUDA test jobs are in trunk run {trunk_wf['id']} (found via check-runs)")
-                all_cuda_jobs = list(cuda_test_jobs)
-
-        if trunk_wf is None:
-            trunk_wf = trunk_runs[0] if trunk_runs else None
+        # Reuse the canonical trunk run resolved once at the top of main() so
+        # CUDA reads from the same full trunk push as the ROCm-trunk sections
+        # (see resolve_full_trunk_run).
+        trunk_wf = trunk_full_wf
+        cuda_test_jobs = trunk_cuda_test_jobs
+        cuda_test_job_kind = trunk_cuda_test_kind
+        all_cuda_jobs = trunk_all_cuda_jobs
         if trunk_wf is None:
             raise Exception("Error: No trunk workflow run found for CUDA tests")
 
