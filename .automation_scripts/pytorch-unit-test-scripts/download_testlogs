@@ -796,7 +796,6 @@ def main():
             # instead of aborting the whole run, which would also drop the
             # CUDA download below and publish an empty report.
             print(f"WARNING: {error_msg} Skipping ROCm inductor for this SHA.")
-            error_msgs.append(error_msg)
         else:
             inductor_wf_name = ROCmWorkflowNames['inductor'] if not inductor_fallback_used else inductor_fallbacks[arch][0]
             print(f"Using workflow '{inductor_wf_name}' with id:{inductor_wf_rocm['id']} for ROCm inductor")
