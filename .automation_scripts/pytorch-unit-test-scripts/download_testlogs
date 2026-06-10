@@ -792,39 +792,44 @@ def main():
             inductor_wf_rocm = download_workflow_run(created=args.created, max_pages=args.max_pages, workflow=fallback_wf, sha=inductor_rocm_sha, ignore_status=args.ignore_status, status=status, error_msg=error_msg)
             inductor_fallback_used = True
         if inductor_wf_rocm is None:
-            raise Exception(error_msg)
-        inductor_wf_name = ROCmWorkflowNames['inductor'] if not inductor_fallback_used else inductor_fallbacks[arch][0]
-        print(f"Using workflow '{inductor_wf_name}' with id:{inductor_wf_rocm['id']} for ROCm inductor")
-
-        folder_list = get_or_create_test_folder(inductor_wf_rocm)
-
-        inductor_shards = rocm_shards["inductor"]
-        print(f"Using final ROCm shard count {inductor_shards} for inductor")
-        if inductor_fallback_used and arch in inductor_fallbacks:
-            inductor_job_prefix = inductor_fallbacks[arch][1]
+            # Inductor is optional and does not run for every SHA. Skip it
+            # instead of aborting the whole run, which would also drop the
+            # CUDA download below and publish an empty report.
+            print(f"WARNING: {error_msg} Skipping ROCm inductor for this SHA.")
+            error_msgs.append(error_msg)
         else:
-            inductor_job_prefix = rocm_job_prefix['inductor']
-    
-        # Download logs
-        if not args.artifacts_only:
-          test_log_list_rocm_inductor = [
-            [f"{current_prefix}rocm_inductor{i}.txt", f"{inductor_job_prefix} / test (inductor, {i}, {inductor_shards}"]
-            for i in range(1, inductor_shards + 1)
-          ]
-          download_logs(inductor_wf_rocm, test_log_list_rocm_inductor, folder_list[0])
+            inductor_wf_name = ROCmWorkflowNames['inductor'] if not inductor_fallback_used else inductor_fallbacks[arch][0]
+            print(f"Using workflow '{inductor_wf_name}' with id:{inductor_wf_rocm['id']} for ROCm inductor")
 
-        #Download artifacts
-        test_artifacts_list_rocm_inductor = [
-          f"test-reports-test-inductor-{i}-{inductor_shards}"
-          for i in range(1, inductor_shards + 1)
-        ]
-        download_artifacts(
-            inductor_wf_rocm,
-            test_artifacts_list_rocm_inductor,
-            test_folder=folder_list[2],
-            allowed_substrings=rocm_artifact_substrings,
-        )
-        os.chdir("..")
+            folder_list = get_or_create_test_folder(inductor_wf_rocm)
+
+            inductor_shards = rocm_shards["inductor"]
+            print(f"Using final ROCm shard count {inductor_shards} for inductor")
+            if inductor_fallback_used and arch in inductor_fallbacks:
+                inductor_job_prefix = inductor_fallbacks[arch][1]
+            else:
+                inductor_job_prefix = rocm_job_prefix['inductor']
+    
+            # Download logs
+            if not args.artifacts_only:
+              test_log_list_rocm_inductor = [
+                [f"{current_prefix}rocm_inductor{i}.txt", f"{inductor_job_prefix} / test (inductor, {i}, {inductor_shards}"]
+                for i in range(1, inductor_shards + 1)
+              ]
+              download_logs(inductor_wf_rocm, test_log_list_rocm_inductor, folder_list[0])
+
+            #Download artifacts
+            test_artifacts_list_rocm_inductor = [
+              f"test-reports-test-inductor-{i}-{inductor_shards}"
+              for i in range(1, inductor_shards + 1)
+            ]
+            download_artifacts(
+                inductor_wf_rocm,
+                test_artifacts_list_rocm_inductor,
+                test_folder=folder_list[2],
+                allowed_substrings=rocm_artifact_substrings,
+            )
+            os.chdir("..")
 
     if not args.no_cuda:
         cuda_config = PARITY_CONFIG["cuda"]
