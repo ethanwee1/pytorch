@@ -1,5 +1,5 @@
 name: Parity Report
-run-name: "${{ inputs.baseline_sha && format('{0} vs {1}', inputs.sha || 'latest', inputs.baseline_sha) || inputs.csv_name || inputs.pr_id && format('PR {0}', inputs.pr_id) || inputs.sha || 'latest' }} · ${{ inputs.arch || 'mi355, mi300, mi200' }}"
+run-name: "${{ inputs.baseline_sha && format('{0} vs {1}', inputs.sha || 'latest', inputs.baseline_sha) || inputs.csv_name || inputs.pr_id && format('PR {0}', inputs.pr_id) || inputs.sha || 'latest' }} · ${{ inputs.arch || 'mi350, mi300, mi200' }}"
 
 on:
   workflow_dispatch:
@@ -18,9 +18,9 @@ on:
         required: false
         type: string
       arch:
-        description: 'ROCm architectures, comma or space separated. Options: mi355, mi300, mi200, nightly, navi31. Example: "nightly, mi355" or "mi300"'
+        description: 'ROCm architectures, comma or space separated. Options: mi350, mi300, mi200, nightly, navi31. Example: "nightly, mi350" or "mi300"'
         required: false
-        default: 'mi355, mi300, mi200'
+        default: 'mi350, mi300, mi200'
         type: string
       exclude_distributed:
         description: 'Exclude distributed tests (auto-excluded for navi31)'
