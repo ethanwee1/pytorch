@@ -154,18 +154,15 @@ jobs:
       - name: Download artifacts
         working-directory: .automation_scripts/pytorch-unit-test-scripts
         env:
-          GITHUB_TOKEN: ${{ secrets.PARITY_GITHUB_TOKEN || github.token }}
+          GITHUB_TOKEN: ${{ secrets.PARITY_GITHUB_TOKEN }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
-          # Translate the workflow inputs into download_testlogs CLI flags. Job
-          # names, shard counts and workflow matching all live in
-          # parity_job_config.json, which download_testlogs reads itself - this
-          # step only forwards the per-run options.
+          # Forward run options to download_testlogs; job/shard/workflow matching
+          # lives in parity_job_config.json (used by parity-auto.yml gating).
           #
-          # pipefail so a download_testlogs failure fails this step instead of
-          # being hidden by tee's 0 exit code (which would publish a partial,
-          # half-empty report as a green run).
+          # pipefail: without it, tee's 0 exit code hides a download_testlogs
+          # failure and we'd publish a partial report as a green run.
           set -o pipefail
           ARGS="--arch ${{ matrix.arch }}"
 
@@ -307,7 +304,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ needs.setup-matrix.outputs.prefix }}-results-${{ matrix.arch }}
-          retention-days: 30
+          retention-days: 1
           path: ${{ steps.upload-paths.outputs.paths }}
 
   summarize:
@@ -403,6 +400,14 @@ jobs:
           python3 generate_summary.py "${ARGS[@]}"
 
           cat "${OUTPUT}.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload parity summary markdown
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-summary-md
+          path: .automation_scripts/pytorch-unit-test-scripts/*_summary.md
+          if-no-files-found: ignore
+          retention-days: 120
 
       - name: Add artifact links to summary
         env:
