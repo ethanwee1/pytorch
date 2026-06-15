@@ -527,6 +527,12 @@ def resolve_full_trunk_run(sha, cuda_job_prefix, status='success', ignore_status
         headers=authentication_headers, params=params,
     )
     trunk_runs = resp.json().get('workflow_runs', [])
+    # Prefer the normal push trunk run over scheduled trunk runs. The scheduled
+    # trunk.yml runs are the periodic rerun_disabled_tests / mem_leak_check
+    # variants: their test jobs share the same names but run in a degenerate
+    # mode and produce near-empty reports. A stable sort keeps the API's
+    # newest-first order within each group, so we pick the newest push run.
+    trunk_runs.sort(key=lambda r: r.get('event') != 'push')
 
     trunk_wf = None
     cuda_test_jobs = []
