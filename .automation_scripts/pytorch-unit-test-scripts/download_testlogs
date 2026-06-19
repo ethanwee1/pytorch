@@ -207,7 +207,7 @@ def get_cuda_test_jobs(jobs, cuda_job_prefix):
 
 def get_cuda_inductor_test_jobs(jobs):
     """Return the CUDA inductor test kind and jobs for either main or PR CI layouts."""
-    inductor_prefix = PARITY_CONFIG["cuda"]["inductor_job_prefix"]
+    inductor_prefix = PARITY_CONFIG["cuda"]["job_prefixes"]["inductor"]
     for test_kind in CUDA_TEST_KINDS:
         test_jobs = [
             j for j in jobs
@@ -668,7 +668,7 @@ def main():
         print(f"Resolving canonical trunk run for sha: {sha}")
         print("==============================================")
         trunk_full_wf, trunk_cuda_test_jobs, trunk_cuda_test_kind, trunk_all_cuda_jobs = \
-            resolve_full_trunk_run(sha, PARITY_CONFIG["cuda"]["job_prefix"], status, args.ignore_status)
+            resolve_full_trunk_run(sha, PARITY_CONFIG["cuda"]["job_prefixes"]["default"], status, args.ignore_status)
         if trunk_full_wf is not None:
             print(f"Using trunk run {trunk_full_wf['id']} as the canonical run for this SHA "
                   f"({len(trunk_cuda_test_jobs)} CUDA test jobs); ROCm-trunk and CUDA share it")
@@ -865,7 +865,7 @@ def main():
 
     if not args.no_cuda:
         cuda_config = PARITY_CONFIG["cuda"]
-        cuda_job_prefix = cuda_config["job_prefix"]
+        cuda_job_prefix = cuda_config["job_prefixes"]["default"]
         cuda_shards = cuda_config["shard_counts"]
         print("==========================================")
         print(f"Finding CUDA tests in workflow '{CUDAWorkflowNames['default']}' by sha: {sha}")
@@ -966,7 +966,7 @@ def main():
 
             folder_list = get_or_create_test_folder(inductor_wf_cuda)
 
-            cuda_inductor_prefix = cuda_config["inductor_job_prefix"]
+            cuda_inductor_prefix = cuda_config["job_prefixes"]["inductor"]
             cuda_inductor_shards = cuda_shards["inductor"]
 
             # Download logs
