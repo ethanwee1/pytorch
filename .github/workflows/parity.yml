@@ -7,18 +7,19 @@ name: Parity Report
 #   3. summarize       - merge the per-arch CSVs into one report + step summary
 #
 # The run-name below is just a human-friendly title shown in the Actions list.
-# It reads as: [autoparity- if auto-triggered] <label> · <archs>, where <label>
-# is the first of: "<sha> vs <baseline>", csv_name, "PR <id>", <sha>, "latest".
-# "autoparity-" only marks auto-trigger dispatches; it never affects filenames.
-run-name: "${{ inputs.auto_triggered && 'autoparity-' || '' }}${{ inputs.baseline_sha && format('{0} vs {1}', inputs.sha || 'latest', inputs.baseline_sha) || inputs.csv_name || inputs.pr_id && format('PR {0}', inputs.pr_id) || inputs.sha || 'latest' }} · ${{ inputs.arch || 'mi350, mi300, mi200' }}"
+# It reads as: [<csv_name>-]<label> · <archs>, where <label> is the first of:
+# "<sha> vs <baseline>", "PR <id>", or <sha> (which defaults to "latest").
+# csv_name, when given, is prepended so a custom run is easy to spot.
+run-name: "${{ inputs.csv_name && format('{0}-', inputs.csv_name) || '' }}${{ inputs.baseline_sha && format('{0} vs {1}', inputs.sha, inputs.baseline_sha) || inputs.pr_id && format('PR {0}', inputs.pr_id) || inputs.sha }} · ${{ inputs.arch }}"
 
 on:
   workflow_dispatch:
     inputs:
       # download_testlogs flags
       sha:
-        description: 'Commit SHA to pull test results for. Example: 67f1ccf46a966e75f37facd497a03f7d1bd72982. Leave empty for latest green on main.'
+        description: 'Commit SHA to pull test results for. Example: 67f1ccf46a966e75f37facd497a03f7d1bd72982.'
         required: false
+        default: 'latest'
         type: string
       baseline_sha:
         description: 'Baseline commit SHA to compare against (same workflow/arch). Produces a commit-vs-commit report instead of ROCm-vs-CUDA.'
@@ -33,11 +34,6 @@ on:
         required: false
         default: 'mi350, mi300, mi200'
         type: string
-      auto_triggered:
-        description: 'Internal: set by parity-auto.yml for runs dispatched by the auto-trigger. Only prefixes the run name with "autoparity-"; does not affect output/CSV filenames.'
-        required: false
-        default: false
-        type: boolean
       exclude_distributed:
         description: 'Exclude distributed tests (auto-excluded for navi31)'
         required: false
@@ -120,7 +116,7 @@ jobs:
           # specific identifier the dispatcher gave us.
           if [ -n "${{ inputs.csv_name }}" ]; then
             PREFIX="${{ inputs.csv_name }}"
-          elif [ -n "${{ inputs.sha }}" ]; then
+          elif [ -n "${{ inputs.sha }}" ] && [ "${{ inputs.sha }}" != "latest" ]; then
             PREFIX="${{ inputs.sha }}"
           elif [ -n "${{ inputs.pr_id }}" ]; then
             PREFIX="${{ inputs.pr_id }}"
@@ -158,15 +154,14 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
-          # Forward run options to download_testlogs; job/shard/workflow matching
-          # lives in parity_job_config.json (used by parity-auto.yml gating).
+          # Forward run options to download_testlogs.
           #
           # pipefail: without it, tee's 0 exit code hides a download_testlogs
           # failure and we'd publish a partial report as a green run.
           set -o pipefail
           ARGS="--arch ${{ matrix.arch }}"
 
-          if [ -n "${{ inputs.sha }}" ]; then
+          if [ -n "${{ inputs.sha }}" ] && [ "${{ inputs.sha }}" != "latest" ]; then
             ARGS="$ARGS --sha1 ${{ inputs.sha }}"
           fi
           if [ -n "${{ inputs.pr_id }}" ]; then
@@ -330,6 +325,7 @@ jobs:
         run: |
           ARCHS="${{ inputs.arch }}"
           SHA="${{ inputs.sha }}"
+          [ "$SHA" = "latest" ] && SHA=""
           PR_ID="${{ inputs.pr_id }}"
           BASELINE_SHA="${{ inputs.baseline_sha }}"
           if [ -n "$BASELINE_SHA" ]; then
