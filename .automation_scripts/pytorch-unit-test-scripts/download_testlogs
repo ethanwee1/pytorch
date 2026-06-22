@@ -31,18 +31,46 @@ if missing_vars:
 # global variables
 error_msgs = []
 
-# Job-name matching config (workflow names, job-name prefixes, shard counts,
-# artifact substrings, fallbacks and check-run regexes) lives in a single JSON
-# file next to this script so download_testlogs and parity-auto.yml share one
-# source of truth. See parity_job_config.json for the schema.
+# Job-name matching config (workflow names, job-name prefixes, shard counts and
+# check-run regexes) lives in a single JSON file next to this script so
+# download_testlogs and parity-auto.yml share one source of truth. See
+# parity_job_config.json for the schema.
 PARITY_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parity_job_config.json")
 with open(PARITY_CONFIG_PATH) as _f:
     PARITY_CONFIG = json.load(_f)
 
+# Every ROCm runner label follows the rocm.gpu convention, so the S3 artifact
+# downloader always filters on it to avoid pulling foreign platforms' reports.
+ROCM_ARTIFACT_SUBSTRINGS = ["rocm.gpu"]
+
+# Test configs whose sources are listed in the per-arch config (in order).
+_TEST_CONFIGS = ("default", "distributed", "inductor")
+
+
+def parity_config_views(cfg):
+    """Unpack the per-config ordered [{workflow, job_prefix}, ...] lists into the
+    flat dicts the matching logic expects: (workflows, job_prefixes, fallbacks).
+
+    The first list entry per test config is the primary source; the second (if
+    present) is its fallback. Test configs absent from cfg are simply skipped.
+    """
+    workflows, job_prefixes, fallbacks = {}, {}, {}
+    for tc in _TEST_CONFIGS:
+        sources = cfg.get(tc)
+        if not sources:
+            continue
+        workflows[tc] = sources[0]["workflow"]
+        job_prefixes[tc] = sources[0]["job_prefix"]
+        if len(sources) > 1:
+            fallbacks[tc] = {"workflow": sources[1]["workflow"],
+                             "job_prefix": sources[1]["job_prefix"]}
+    return workflows, job_prefixes, fallbacks
+
+
 # Workflow names mapped to TEST_CONFIG values in PyTorch CI.
 # ROCmWorkflowNames is set per --arch in main(); CUDA is arch-independent.
 ROCmWorkflowNames = {}
-CUDAWorkflowNames = dict(PARITY_CONFIG["cuda"]["workflows"])
+CUDAWorkflowNames, CUDA_JOB_PREFIXES, _ = parity_config_views(PARITY_CONFIG["cuda"])
 
 authentication_headers = None
 
@@ -207,7 +235,7 @@ def get_cuda_test_jobs(jobs, cuda_job_prefix):
 
 def get_cuda_inductor_test_jobs(jobs):
     """Return the CUDA inductor test kind and jobs for either main or PR CI layouts."""
-    inductor_prefix = PARITY_CONFIG["cuda"]["job_prefixes"]["inductor"]
+    inductor_prefix = CUDA_JOB_PREFIXES["inductor"]
     for test_kind in CUDA_TEST_KINDS:
         test_jobs = [
             j for j in jobs
@@ -583,16 +611,15 @@ def main():
         args.max_pages=1
 
     # All arch-specific matching (which upstream workflow each test type lives
-    # in, job-name prefixes, shard counts, artifact filters and fallbacks) comes
-    # from parity_job_config.json - see PARITY_CONFIG at the top of this file.
+    # in, job-name prefixes, shard counts and fallbacks) comes from
+    # parity_job_config.json - see PARITY_CONFIG at the top of this file.
     global ROCmWorkflowNames
     arch = args.arch  # 'mi200', 'mi300', 'mi350', 'navi31', or 'nightly'
     arch_config = PARITY_CONFIG["rocm"][arch]
 
-    ROCmWorkflowNames = dict(arch_config["workflows"])
-    rocm_job_prefix = dict(arch_config["job_prefixes"])
+    ROCmWorkflowNames, rocm_job_prefix, arch_fallbacks = parity_config_views(arch_config)
     rocm_shards = dict(arch_config["shard_counts"])
-    rocm_artifact_substrings = arch_config["artifact_substrings"]
+    rocm_artifact_substrings = ROCM_ARTIFACT_SUBSTRINGS
 
     # Fallback (workflow, job_prefix) to try per test type when the primary
     # workflow run is missing for a SHA. Kept as tuples keyed by arch so the
@@ -600,7 +627,7 @@ def main():
     def _fallbacks_for(test_type):
         result = {}
         for other_arch, other_config in PARITY_CONFIG["rocm"].items():
-            fallback = other_config.get("fallbacks", {}).get(test_type)
+            fallback = parity_config_views(other_config)[2].get(test_type)
             if fallback:
                 result[other_arch] = (fallback["workflow"], fallback["job_prefix"])
         return result
@@ -657,7 +684,7 @@ def main():
     arch_uses_trunk = "trunk" in ROCmWorkflowNames.values()
     fallback_uses_trunk = any(
         fb.get("workflow") == "trunk"
-        for fb in arch_config.get("fallbacks", {}).values()
+        for fb in arch_fallbacks.values()
     )
     trunk_full_wf = None
     trunk_cuda_test_jobs = []
@@ -668,7 +695,7 @@ def main():
         print(f"Resolving canonical trunk run for sha: {sha}")
         print("==============================================")
         trunk_full_wf, trunk_cuda_test_jobs, trunk_cuda_test_kind, trunk_all_cuda_jobs = \
-            resolve_full_trunk_run(sha, PARITY_CONFIG["cuda"]["job_prefixes"]["default"], status, args.ignore_status)
+            resolve_full_trunk_run(sha, CUDA_JOB_PREFIXES["default"], status, args.ignore_status)
         if trunk_full_wf is not None:
             print(f"Using trunk run {trunk_full_wf['id']} as the canonical run for this SHA "
                   f"({len(trunk_cuda_test_jobs)} CUDA test jobs); ROCm-trunk and CUDA share it")
@@ -865,7 +892,7 @@ def main():
 
     if not args.no_cuda:
         cuda_config = PARITY_CONFIG["cuda"]
-        cuda_job_prefix = cuda_config["job_prefixes"]["default"]
+        cuda_job_prefix = CUDA_JOB_PREFIXES["default"]
         cuda_shards = cuda_config["shard_counts"]
         print("==========================================")
         print(f"Finding CUDA tests in workflow '{CUDAWorkflowNames['default']}' by sha: {sha}")
@@ -966,7 +993,7 @@ def main():
 
             folder_list = get_or_create_test_folder(inductor_wf_cuda)
 
-            cuda_inductor_prefix = cuda_config["job_prefixes"]["inductor"]
+            cuda_inductor_prefix = CUDA_JOB_PREFIXES["inductor"]
             cuda_inductor_shards = cuda_shards["inductor"]
 
             # Download logs
