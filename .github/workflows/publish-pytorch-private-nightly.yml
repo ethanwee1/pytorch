@@ -196,7 +196,8 @@ jobs:
             curl -fSL -o artifacts.zip "'"$ARTIFACT_URL"'"
             unzip -o -q artifacts.zip
             pip install dist/*.whl
-            python -c "import torch; print(\"torch\", torch.__version__)"
+            # Verify from outside the repo so the local torch/ source dir does not shadow the wheel.
+            ( cd /tmp && python -c "import torch; print(\"torch\", torch.__version__)" )
           '
 
       - name: Generate tags
