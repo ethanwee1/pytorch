@@ -1,0 +1,249 @@
+name: Publish pytorch-private nightly (upstream CI image + built torch)
+
+# Nightly: take the pytorch/pytorch ROCm CI image at the latest trunk commit,
+# install the CI-built torch wheel and check out the source at that commit, then
+# push the result to docker.io/rocm/pytorch-private.
+#
+# Both upstream artifacts are public, so no upstream credentials are needed:
+#   * CI image:  ghcr.io/pytorch/<docker-image-name>-<sha of .ci/docker>  (anon pull)
+#   * torch whl: https://gha-artifacts.s3.amazonaws.com/pytorch/pytorch/<run_id>/<build-env>/artifacts.zip
+
+on:
+  schedule:
+    - cron: "0 7 * * *"   # daily at 07:00 UTC
+  workflow_dispatch:
+    inputs:
+      source_workflow:
+        description: "Upstream pytorch/pytorch workflow file that builds the ROCm CI wheel"
+        type: string
+        default: "rocm-mi300.yml"
+      commit:
+        description: "pytorch/pytorch commit to use (default: latest main with a successful build + artifact)"
+        type: string
+        default: ""
+      push_tag:
+        description: "Primary Docker Hub tag"
+        type: string
+        default: "nightly"
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_REPO: pytorch/pytorch
+  UPSTREAM_BRANCH: main
+  REGISTRY: docker.io
+  IMAGE_NAME: rocm/pytorch-private
+  SOURCE_WORKFLOW: ${{ inputs.source_workflow || 'rocm-mi300.yml' }}
+  PUSH_TAG: ${{ inputs.push_tag || 'nightly' }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/.ghcup \
+                      /opt/hostedtoolcache/CodeQL "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune -af || true
+          df -h /
+
+      - name: Resolve upstream commit, CI image, and wheel artifact
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_COMMIT: ${{ inputs.commit }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os, sys, urllib.request, urllib.error, base64
+
+          OWNER, REPO = os.environ["UPSTREAM_REPO"].split("/")
+          BRANCH = os.environ["UPSTREAM_BRANCH"]
+          WF = os.environ["SOURCE_WORKFLOW"]
+          TOKEN = os.environ.get("GH_TOKEN")
+          PINNED = os.environ.get("INPUT_COMMIT", "").strip()
+
+          try:
+              import yaml  # PyYAML is preinstalled on ubuntu-latest runners
+          except ImportError:
+              os.system("pip install --quiet pyyaml")
+              import yaml
+
+          def gh(url):
+              req = urllib.request.Request(url, headers={
+                  "Accept": "application/vnd.github+json",
+                  "User-Agent": "rocm-pytorch-private-nightly",
+                  "X-GitHub-Api-Version": "2022-11-28",
+                  **({"Authorization": f"Bearer {TOKEN}"} if TOKEN else {}),
+              })
+              with urllib.request.urlopen(req, timeout=120) as r:
+                  return json.loads(r.read().decode())
+
+          def file_text(path, ref):
+              p = urllib.parse.quote(path, safe="/")
+              data = gh(f"https://api.github.com/repos/{OWNER}/{REPO}/contents/{p}?ref={ref}")
+              return base64.b64decode(data["content"]).decode()
+
+          def docker_dir_sha(ref):
+              for e in gh(f"https://api.github.com/repos/{OWNER}/{REPO}/contents/.ci?ref={ref}"):
+                  if e["name"] == "docker":
+                      return e["sha"]
+              raise SystemExit("could not find .ci/docker tree sha")
+
+          def rocm_build_job(wf_yaml):
+              jobs = (yaml.safe_load(wf_yaml) or {}).get("jobs", {})
+              hits = []
+              for jid, jdef in jobs.items():
+                  if not isinstance(jdef, dict) or "build" not in jid.lower():
+                      continue
+                  blob = f"{jid} {jdef.get('name','')}".lower()
+                  if "rocm" in blob and "cuda" not in blob:
+                      hits.append((jid, jdef))
+              if len(hits) != 1:
+                  raise SystemExit(f"expected exactly one ROCm build job, found {len(hits)}")
+              jid, jdef = hits[0]
+              with_ = jdef.get("with", {}) or {}
+              stem = with_.get("docker-image-name")
+              label = with_.get("build-environment") or jdef.get("name") or jid
+              if not stem:
+                  raise SystemExit("ROCm build job has no docker-image-name")
+              return stem.strip(), str(label).strip()
+
+          def artifact_ok(run_id, label):
+              o = urllib.parse.quote(OWNER, safe=""); r = urllib.parse.quote(REPO, safe="")
+              seg = urllib.parse.quote(label, safe="")
+              url = (f"https://gha-artifacts.s3.amazonaws.com/{o}/{r}/"
+                     f"{run_id}/{seg}/artifacts.zip")
+              try:
+                  req = urllib.request.Request(url, method="HEAD")
+                  with urllib.request.urlopen(req, timeout=60):
+                      return url
+              except urllib.error.HTTPError:
+                  return None
+
+          import urllib.parse
+
+          # Candidate (commit, run_id) pairs, newest first.
+          candidates = []
+          if PINNED:
+              full = gh(f"https://api.github.com/repos/{OWNER}/{REPO}/commits/{PINNED}")["sha"]
+              runs = gh(f"https://api.github.com/repos/{OWNER}/{REPO}/actions/workflows/"
+                        f"{urllib.parse.quote(WF, safe='')}/runs?head_sha={full}&per_page=20"
+                        )["workflow_runs"]
+              for run in runs:
+                  candidates.append((full, run["id"]))
+          else:
+              runs = gh(f"https://api.github.com/repos/{OWNER}/{REPO}/actions/workflows/"
+                        f"{urllib.parse.quote(WF, safe='')}/runs?branch={BRANCH}"
+                        f"&status=success&per_page=30")["workflow_runs"]
+              for run in runs:
+                  candidates.append((run["head_sha"], run["id"]))
+
+          for commit, run_id in candidates:
+              try:
+                  stem, label = rocm_build_job(file_text(f".github/workflows/{WF}", commit))
+              except SystemExit:
+                  continue
+              url = artifact_ok(run_id, label)
+              if not url:
+                  continue
+              dsha = docker_dir_sha(commit)
+              image = f"ghcr.io/pytorch/{stem}-{dsha}"
+              print(f"commit={commit}")
+              print(f"short_sha={commit[:7]}")
+              print(f"run_id={run_id}")
+              print(f"image_ref={image}")
+              print(f"artifact_url={url}")
+              print(f"build_label={label}")
+              sys.exit(0)
+
+          raise SystemExit("no upstream run with a resolvable CI image + artifact found")
+          PY
+
+      - name: Show resolution
+        run: |
+          echo "commit       = ${{ steps.resolve.outputs.commit }}"
+          echo "run_id       = ${{ steps.resolve.outputs.run_id }}"
+          echo "image_ref    = ${{ steps.resolve.outputs.image_ref }}"
+          echo "build_label  = ${{ steps.resolve.outputs.build_label }}"
+          echo "artifact_url = ${{ steps.resolve.outputs.artifact_url }}"
+
+      - name: Pull upstream CI image (anonymous GHCR)
+        run: docker pull "${{ steps.resolve.outputs.image_ref }}"
+
+      - name: Start container
+        id: run
+        run: |
+          CID=$(docker run -d -w /var/lib/jenkins "${{ steps.resolve.outputs.image_ref }}" sleep infinity)
+          echo "cid=${CID}" >> "$GITHUB_OUTPUT"
+
+      - name: Clone source + install CI-built wheel inside container
+        env:
+          CID: ${{ steps.run.outputs.cid }}
+          COMMIT: ${{ steps.resolve.outputs.commit }}
+          ARTIFACT_URL: ${{ steps.resolve.outputs.artifact_url }}
+        run: |
+          docker exec -u root "$CID" bash -lc '
+            set -euo pipefail
+            command -v unzip >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq unzip; }
+            command -v curl  >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq curl; }
+            WORK=/var/lib/jenkins/pytorch
+            rm -rf "$WORK"
+            git clone --filter=blob:none --no-checkout https://github.com/'"${UPSTREAM_REPO}"'.git "$WORK"
+            cd "$WORK"
+            git fetch --depth 1 origin '"$COMMIT"' || git fetch origin '"$COMMIT"'
+            git checkout --detach '"$COMMIT"'
+            curl -fSL -o artifacts.zip "'"$ARTIFACT_URL"'"
+            unzip -o -q artifacts.zip
+            pip install dist/*.whl
+            python -c "import torch; print(\"torch\", torch.__version__)"
+          '
+
+      - name: Generate tags
+        id: tags
+        run: |
+          DATE=$(date -u +%Y%m%d)
+          echo "primary=${PUSH_TAG}" >> "$GITHUB_OUTPUT"
+          echo "dated=nightly-${DATE}-${{ steps.resolve.outputs.short_sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Commit container to image
+        env:
+          CID: ${{ steps.run.outputs.cid }}
+        run: |
+          PRIMARY="${REGISTRY}/${IMAGE_NAME}:${{ steps.tags.outputs.primary }}"
+          DATED="${REGISTRY}/${IMAGE_NAME}:${{ steps.tags.outputs.dated }}"
+          docker commit \
+            --change 'WORKDIR /var/lib/jenkins/pytorch' \
+            --change "LABEL pytorch.repo=${UPSTREAM_REPO}" \
+            --change "LABEL pytorch.commit=${{ steps.resolve.outputs.commit }}" \
+            --change "LABEL pytorch.source_image=${{ steps.resolve.outputs.image_ref }}" \
+            "$CID" "$PRIMARY"
+          docker tag "$PRIMARY" "$DATED"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERUSERNAME }}
+          password: ${{ secrets.DOCKERTOKEN || secrets.DCKRPAT }}
+
+      - name: Push
+        run: |
+          docker push "${REGISTRY}/${IMAGE_NAME}:${{ steps.tags.outputs.primary }}"
+          docker push "${REGISTRY}/${IMAGE_NAME}:${{ steps.tags.outputs.dated }}"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## pytorch-private nightly"
+            echo ""
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| upstream commit | \`${{ steps.resolve.outputs.commit }}\` |"
+            echo "| source CI image | \`${{ steps.resolve.outputs.image_ref }}\` |"
+            echo "| pushed tags | \`${{ steps.tags.outputs.primary }}\`, \`${{ steps.tags.outputs.dated }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f "${{ steps.run.outputs.cid }}" 2>/dev/null || true
