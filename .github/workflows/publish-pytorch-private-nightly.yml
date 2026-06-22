@@ -46,7 +46,18 @@ jobs:
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/.ghcup \
                       /opt/hostedtoolcache/CodeQL "$AGENT_TOOLSDIRECTORY" || true
           sudo docker image prune -af || true
-          df -h /
+          df -h / /mnt
+
+      - name: Move Docker storage to /mnt (large disk)
+        # The ROCm CI image is tens of GB; the runner root disk is too small, so point
+        # Docker's data-root at /mnt (the runner's large ephemeral disk, ~70 GB free).
+        run: |
+          sudo systemctl stop docker docker.socket || true
+          sudo mkdir -p /mnt/docker
+          echo '{"data-root":"/mnt/docker"}' | sudo tee /etc/docker/daemon.json
+          sudo systemctl start docker
+          docker info --format 'Docker Root Dir: {{.DockerRootDir}}'
+          df -h / /mnt
 
       - name: Resolve upstream commit, CI image, and wheel artifact
         id: resolve
