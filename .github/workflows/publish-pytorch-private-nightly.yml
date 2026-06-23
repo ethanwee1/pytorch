@@ -16,7 +16,7 @@ on:
       source_workflow:
         description: "Upstream pytorch/pytorch workflow file that builds the ROCm CI wheel"
         type: string
-        default: "rocm-mi300.yml"
+        default: "trunk.yml"
       commit:
         description: "pytorch/pytorch commit to use (default: latest main with a successful build + artifact)"
         type: string
@@ -34,7 +34,7 @@ env:
   UPSTREAM_BRANCH: main
   REGISTRY: docker.io
   IMAGE_NAME: rocm/pytorch-private
-  SOURCE_WORKFLOW: ${{ inputs.source_workflow || 'rocm-mi300.yml' }}
+  SOURCE_WORKFLOW: ${{ inputs.source_workflow || 'trunk.yml' }}
   PUSH_TAG: ${{ inputs.push_tag || 'nightly' }}
 
 jobs:
