@@ -715,20 +715,25 @@ def summarize_xml_files(args):
          writer.writerows(test_file_running_time_for_csv.values())
 
     # print summary
+    # User-facing labels follow the same set1/set2 naming as the CSV columns
+    # (set1_name/set2_name default to rocm/cuda, or are commit SHAs in
+    # commit-vs-commit mode) so the printed summary stays consistent with them.
+    set1_disp = set1_name.upper()
+    set2_disp = set2_name.upper()
     print( " " )
     print( "_____________________________________" )
     print( "Test-results" )
     print( " " )
     print( "=====Single GPU Number=====" )
-    print( "SKIPPED_DEFAULT, MISSED_DEFAULT, ROCMONLY_DEFAULT, CUDA_DEFAULT, ROCM_DEFAULT" )
+    print( f"SKIPPED_DEFAULT, MISSED_DEFAULT, {set1_disp}ONLY_DEFAULT, {set2_disp}_DEFAULT, {set1_disp}_DEFAULT" )
     print( str(SKIPPED_DEFAULT) + ", " + str(MISSED_DEFAULT) + ", " + str(ROCMONLY_DEFAULT) + ", " + str(CUDA_DEFAULT) + ", " + str(ROCM_DEFAULT) )
     print( " " )
     print( "=====Distributed GPU Number=====" )
-    print( "SKIPPED_DISTRIBUTED, MISSED_DISTRIBUTED, ROCMONLY_DISTRIBUTED, CUDA_DISTRIBUTED, ROCM_DISTRIBUTED" )
+    print( f"SKIPPED_DISTRIBUTED, MISSED_DISTRIBUTED, {set1_disp}ONLY_DISTRIBUTED, {set2_disp}_DISTRIBUTED, {set1_disp}_DISTRIBUTED" )
     print( str(SKIPPED_DISTRIBUTED) + ", " + str(MISSED_DISTRIBUTED) + ", " + str(ROCMONLY_DISTRIBUTED) + ", " + str(CUDA_DISTRIBUTED) + ", " + str(ROCM_DISTRIBUTED) )
     print( " " )
     print( "=====Inductor GPU Number=====" )
-    print( "SKIPPED_INDUCTOR, MISSED_INDUCTOR, ROCMONLY_INDUCTOR, CUDA_INDUCTOR, ROCM_INDUCTOR" )
+    print( f"SKIPPED_INDUCTOR, MISSED_INDUCTOR, {set1_disp}ONLY_INDUCTOR, {set2_disp}_INDUCTOR, {set1_disp}_INDUCTOR" )
     print( str(SKIPPED_INDUCTOR) + ", " + str(MISSED_INDUCTOR) + ", " + str(ROCMONLY_INDUCTOR) + ", " + str(CUDA_INDUCTOR) + ", " + str(ROCM_INDUCTOR) )
     print( " " )
     print( "SELECTED CAUSES SUMMARY" )
@@ -753,7 +758,7 @@ def summarize_xml_files(args):
     print( " " )
     print( "=====================" )
     print( "Time statistics" )
-    print( "ROCM_RUNNING_TIME, CUDA_RUNNING_TIME" )
+    print( f"{set1_disp}_RUNNING_TIME, {set2_disp}_RUNNING_TIME" )
     print( str(TOTAL_ROCM_RUNNING_TIME) + ", " + str(TOTAL_CUDA_RUNNING_TIME) )
     #print( "ROCm test file level time statistics" )
     #for (k,v) in list(test_file_level_ROCm.items()):
