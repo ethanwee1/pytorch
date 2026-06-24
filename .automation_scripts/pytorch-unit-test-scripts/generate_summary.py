@@ -78,10 +78,10 @@ def test_config_stats_keys(s1_name, s2_name, has_set2=True):
             f'TOTAL {s1}',
         ]
     return [
-        f'SKIPPED (on {s1_name}, but not on {s2_name})',
+        f'SKIPPED (on {s1_name}, PASSED on {s2_name})',
         f'SKIPPED (on {s1_name})',
         f'SKIPPED (on {s2_name})',
-        f'MISSED (MISSED on {s1_name}, NOT SKIPPED on {s2_name})',
+        f'MISSED (on {s1_name}, PASSED on {s2_name})',
         f'{s1}ONLY (PASSED on {s1}, NOT PASSED on {s2})',
         s2,
         s1,
@@ -107,13 +107,13 @@ def compute_test_config_stats(rows, s1_col, s2_col, s1_name, s2_name, has_set2=T
 
     s1_skip_not_s2 = sum(
         1 for r in rows
-        if r[s1_col] == 'SKIPPED' and r[s2_col] != 'SKIPPED'
+        if r[s1_col] == 'SKIPPED' and r[s2_col] == 'PASSED'
     )
     s1_skip = sum(1 for r in rows if r[s1_col] == 'SKIPPED')
     s2_skip = sum(1 for r in rows if r[s2_col] == 'SKIPPED')
     s1_miss_not_s2_skip = sum(
         1 for r in rows
-        if r[s1_col] == 'MISSED' and r[s2_col] != 'SKIPPED'
+        if r[s1_col] == 'MISSED' and r[s2_col] == 'PASSED'
     )
     only_s1 = sum(
         1 for r in rows
@@ -197,11 +197,11 @@ def compute_overall_stats(rows, s1_col, s2_col, s1_time_col, s2_time_col, s1_nam
         wf_rows = [r for r in rows if r['test_config'] == wf]
         s1_skip_not_s2 = sum(
             1 for r in wf_rows
-            if r[s1_col] == 'SKIPPED' and r[s2_col] != 'SKIPPED'
+            if r[s1_col] == 'SKIPPED' and r[s2_col] == 'PASSED'
         )
         s1_miss_not_s2_skip = sum(
             1 for r in wf_rows
-            if r[s1_col] == 'MISSED' and r[s2_col] != 'SKIPPED'
+            if r[s1_col] == 'MISSED' and r[s2_col] == 'PASSED'
         )
         total_disagree += s1_skip_not_s2 + s1_miss_not_s2_skip
         total_s2 += sum(1 for r in wf_rows if r[s2_col].strip() and r[s2_col].strip() != 'MISSED')
