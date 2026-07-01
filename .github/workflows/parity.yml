@@ -102,6 +102,9 @@ on:
 jobs:
   setup-matrix:
     runs-on: ubuntu-latest
+    # actions:write lets the step below rename this run via the REST API.
+    permissions:
+      actions: write
     outputs:
       arch-matrix: ${{ steps.parse.outputs.matrix }}
       prefix: ${{ steps.parse.outputs.prefix }}
@@ -130,6 +133,30 @@ jobs:
           PREFIX=$(echo "$PREFIX" | xargs)
           echo "prefix=$PREFIX" >> "$GITHUB_OUTPUT"
           echo "Artifact prefix: $PREFIX"
+
+      - name: Add commit SHA to run name (PR runs)
+        # run-name is evaluated once when the run starts, so it can't include the
+        # commit SHA that download_testlogs resolves later from the PR id. For
+        # PR-triggered runs we resolve the PR head SHA here and PATCH the run
+        # name so it reads "PR <id> · <sha> · <archs>". The PR->SHA lookup is
+        # intentionally duplicated (download_testlogs keeps its own copy so it
+        # can still be run standalone with just --pr_id).
+        if: ${{ inputs.pr_id && !inputs.baseline_sha && !inputs.csv_name }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_ID: ${{ inputs.pr_id }}
+          AUTOPARITY: ${{ inputs.auto_triggered && 'autoparity-' || '' }}
+          ARCH: ${{ inputs.arch || 'mi350, mi300, mi200' }}
+        run: |
+          set -euo pipefail
+          SHA=$(gh api "repos/pytorch/pytorch/pulls/${PR_ID}" --jq '.head.sha' 2>/dev/null || true)
+          if [ -z "$SHA" ] || [ "$SHA" = "null" ]; then
+            echo "Could not resolve head SHA for PR ${PR_ID}; leaving run name unchanged."
+            exit 0
+          fi
+          NAME="${AUTOPARITY}PR ${PR_ID} · ${SHA} · ${ARCH}"
+          echo "Renaming run to: ${NAME}"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" -X PATCH -f name="${NAME}"
 
   generate-parity:
     needs: setup-matrix
