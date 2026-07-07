@@ -31,7 +31,7 @@ on:
         required: false
         type: string
       arch:
-        description: 'ROCm architectures, comma or space separated. Options: mi350, mi300, mi200, nightly, navi31. Example: "nightly, mi350" or "mi300"'
+        description: 'ROCm architectures, comma or space separated. Options: mi350, mi300, mi200, nightly, navi31, preview. Example: "nightly, mi350" or "preview"'
         required: false
         default: 'mi350, mi300, mi200'
         type: string

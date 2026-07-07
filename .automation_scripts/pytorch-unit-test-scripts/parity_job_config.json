@@ -70,6 +70,13 @@
       "inductor": [{ "workflow": "rocm-nightly", "job_prefix": "linux-noble-rocm-nightly-py3.12-gfx942" }],
       "shard_counts": { "default": 6, "distributed": 3, "inductor": 2 },
       "checkrun_regex": "rocm-nightly.*/ test [(](default|distributed|inductor),"
+    },
+    "preview": {
+      "default": [{ "workflow": "rocm-preview", "job_prefix": "linux-noble-rocm-preview-py3.12-gfx942" }],
+      "distributed": [{ "workflow": "rocm-preview", "job_prefix": "linux-noble-rocm-preview-py3.12-gfx942" }],
+      "inductor": [{ "workflow": "rocm-preview", "job_prefix": "linux-noble-rocm-preview-py3.12-gfx942" }],
+      "shard_counts": { "default": 6, "distributed": 3, "inductor": 2 },
+      "checkrun_regex": "linux-noble-rocm-preview-py3.12-gfx942 / test [(](default|distributed|inductor),"
     }
   }
 }
