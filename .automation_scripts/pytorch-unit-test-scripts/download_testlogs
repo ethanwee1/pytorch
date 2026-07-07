@@ -556,7 +556,7 @@ def parse_args():
     parser.add_argument('--no_rocm', action='store_true')
     parser.add_argument('--no_cuda', action='store_true')
     parser.add_argument('--pr_id', type=int, help='The pull request ID')
-    parser.add_argument('--arch', type=str, choices=['mi200', 'mi300', 'mi350', 'navi31', 'nightly'], default='mi350', help='ROCm GPU architecture (mi200, mi300, mi350, navi31, or nightly, default: mi350)')
+    parser.add_argument('--arch', type=str, choices=['mi200', 'mi300', 'mi350', 'navi31', 'nightly', 'preview'], default='mi350', help='ROCm GPU architecture (mi200, mi300, mi350, navi31, nightly, or preview, default: mi350)')
     parser.add_argument('--include_inductor_periodic', action='store_true', help='Also download inductor-periodic benchmark artifacts (into a separate directory, not included in parity CSV)')
     parser.add_argument('--baseline_sha', type=str, help='Baseline commit SHA to compare against. Downloads the same ROCm workflows for this commit into baseline_xml/.')
     return parser.parse_args()
