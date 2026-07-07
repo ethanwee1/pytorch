@@ -185,6 +185,36 @@ def get_workflow_jobs(wf, all_attempts=False):
             jobs += page_json["jobs"]
     return jobs
 
+def derive_shard_count(wf, job_prefix, test_config, fallback):
+    """Return the shard total upstream actually used for this (job_prefix,
+    test_config), parsed from job names like
+    '<job_prefix> / test (<config>, <idx>, <total>, ...)' -> <total>.
+
+    Shard counts differ between an arch's primary workflow and its fallback
+    (e.g. mi200 default is 6 shards in rocm-mi200 but 10 in the
+    trunk-rocm-sandbox fallback), so we read the real total from the resolved
+    run instead of assuming the config value - otherwise the constructed
+    "(default, i, 6)" keys miss the actual "(default, i, 10)" jobs. Falls back
+    to `fallback` when the run has no matching jobs.
+    """
+    try:
+        jobs = get_workflow_jobs(wf)
+    except Exception:
+        return fallback
+    pat = re.compile(
+        re.escape(job_prefix) + r" / \S+ \(" + re.escape(test_config) + r", \d+, (\d+)"
+    )
+    totals = {}
+    for job in jobs:
+        m = pat.search(job.get("name", ""))
+        if m:
+            total = int(m.group(1))
+            totals[total] = totals.get(total, 0) + 1
+    if not totals:
+        return fallback
+    # Most common total wins (guards against a stray reshaped/duplicate job).
+    return sorted(totals.items(), key=lambda kv: (-kv[1], -kv[0]))[0][0]
+
 def get_check_runs_for_commit(sha, prefix):
     """Get check runs for a commit filtered by name prefix.
 
@@ -742,10 +772,7 @@ def main():
         # HUD link: https://hud.pytorch.org/hud/pytorch/pytorch/main/1?per_page=50&name_filter=rocm
         # Make sure "Hide unstable jobs" is unselected, in case ROCm jobs are marked as unstable
     
-        if arch == "mi350":
-            dist_shards = 3 if not periodic_fallback_used else rocm_shards["distributed"]
-        else:
-            dist_shards = rocm_shards["distributed"]
+        dist_shards = derive_shard_count(periodic_wf, dist_job_prefix, "distributed", rocm_shards["distributed"])
         print(f"Using final ROCm shard count {dist_shards} for distributed")
 
         if not args.artifacts_only:
@@ -805,10 +832,7 @@ def main():
         # Download logs
         # If logs aren't found you might want to check the HUD for the correct tags
         # HUD link: https://hud.pytorch.org/hud/pytorch/pytorch/main/1?per_page=50&name_filter=rocm
-        if arch == "mi350":
-            default_shards = 6 if default_fallback_used else rocm_shards["default"]
-        else:
-            default_shards = rocm_shards["default"]
+        default_shards = derive_shard_count(rocm_wf, rocm_job_prefix['default'], "default", rocm_shards["default"])
         print(f"Using final ROCm shard count {default_shards} for default")
 
         if not args.artifacts_only:
@@ -863,12 +887,12 @@ def main():
 
             folder_list = get_or_create_test_folder(inductor_wf_rocm)
 
-            inductor_shards = rocm_shards["inductor"]
-            print(f"Using final ROCm shard count {inductor_shards} for inductor")
             if inductor_fallback_used and arch in inductor_fallbacks:
                 inductor_job_prefix = inductor_fallbacks[arch][1]
             else:
                 inductor_job_prefix = rocm_job_prefix['inductor']
+            inductor_shards = derive_shard_count(inductor_wf_rocm, inductor_job_prefix, "inductor", rocm_shards["inductor"])
+            print(f"Using final ROCm shard count {inductor_shards} for inductor")
     
             # Download logs
             if not args.artifacts_only:
