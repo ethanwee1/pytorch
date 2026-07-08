@@ -46,6 +46,15 @@ RULES = [
     # TIER 1: High-specificity combined rules (message + file/class)
     # ==================================================================
 
+    # --- PT2.0 - Convolution: conv2d backward parametrized skipped on ROCm ---
+    # skipIfRocmArch(...) skips test_conv2d_backward_parametrized (see upstream
+    # #188671, CI timeout). Categorize it as a convolution issue rather than the
+    # generic Misc "test skipped on ('gfx...')" bucket below. Must precede that
+    # Misc arch rule.
+    {"reason": "PT2.0 - Convolution",
+     "msg": r"test skipped on \('gfx",
+     "name": r"(?i)conv2d_backward"},
+
     # --- bfloat16_SDPA_ME: dropout mask in test_transformers with bfloat16 in TEST NAME ---
     # Must be before generic SDPA_ME rule
     {"reason": "bfloat16_SDPA_ME",
