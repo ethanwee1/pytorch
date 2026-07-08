@@ -2212,13 +2212,15 @@ class CommonTemplate:
         triton reduction configs for large size hints. #128826 introduced a scaling XBLOCK
         feature to resolve the issue in reduction configs which may exceed the maxGridSize
         """
+        from torch._inductor.runtime.hints import get_warp_size
         from torch._inductor.runtime.runtime_utils import next_power_of_2
         from torch._inductor.runtime.triton_heuristics import triton_config_reduction
 
+        warp_size = get_warp_size(torch.device(self.device))
         size_hints = {"x": 67108864, "r0_": 8192}
         for _ in range(4):
             size_hints["x"] = next_power_of_2(size_hints["x"])
-            triton_config_reduction(size_hints, 1, 2048, 1, 8)
+            triton_config_reduction(size_hints, 1, 2048, 1, 8, warp_size=warp_size)
 
     def test_prod(self):
         def fn(a):
@@ -17271,7 +17273,7 @@ if RUN_GPU:
         )
         @config.patch("triton.persistent_reductions", True)
         def test_has_constant_mask_small_persistent_reduction(self, rnumel):
-            from torch._inductor.runtime.hints import DeviceProperties
+            from torch._inductor.runtime.hints import get_warp_size
 
             def fn(x):
                 return x.sum(dim=-1)
@@ -17281,7 +17283,7 @@ if RUN_GPU:
             code = run_and_get_triton_code(opt_fn, x)
 
             device = torch.device(GPU_TYPE, 0)
-            warp_size = DeviceProperties.create(device).warp_size or 32
+            warp_size = get_warp_size(device)
 
             rblock = 1
             while rblock < rnumel:

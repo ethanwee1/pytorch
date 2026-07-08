@@ -30,6 +30,7 @@ from ..kernel.mm import (
 )
 from ..kernel.mm_plus_mm import mm_plus_mm_template
 from ..kernel_inputs import KernelInputs, MMKernelInputs
+from ..runtime.hints import DeviceProperties
 from ..utils import (
     get_backend_num_stages,
     get_default_kpack,
@@ -1019,11 +1020,22 @@ class BaseConfigHeuristic(metaclass=BaseHeuristicSingleton):
         self,
         configs: list[BaseConfig],
     ) -> list[BaseConfig]:
+        try:
+            device = torch.cuda.current_device()
+            props = torch.cuda.get_device_properties(device)
+            warp_size = props.warp_size
+        except (RuntimeError, AttributeError, AssertionError):
+            return configs
+
         pruned_configs = []
+        # NVIDIA-oriented approximation for the per-thread register limit.
+        # TODO: generalize this threshold for ROCm devices.
+        NUM_REG = 255
         for gemm_config in configs:
-            NUM_REG = 255
             acc_regs = math.ceil(
-                gemm_config.block_m * gemm_config.block_n / (gemm_config.num_warps * 32)
+                gemm_config.block_m
+                * gemm_config.block_n
+                / (gemm_config.num_warps * warp_size)
             )
             # Lower bound for register spillage, if exceeds the kernel will certainly spill
             if acc_regs > NUM_REG:
