@@ -59,6 +59,19 @@ with open(PARITY_CONFIG_PATH) as _f:
 # downloader always filters on it to avoid pulling foreign platforms' reports.
 ROCM_ARTIFACT_SUBSTRINGS = ["rocm.gpu"]
 
+# CI "variant" jobs reuse the normal shard's test-reports-<config>-<shard>-<total>
+# artifact prefix and the same "(config, shard, total" name, but only contain a
+# tiny, unrepresentative slice: rerun_disabled_tests re-runs just the currently
+# disabled/flaky tests, mem_leak_check runs a leak-checking pass. Matching one of
+# these instead of the normal job makes almost the whole suite look MISSED
+# (e.g. mi350 inductor: ~10 flaky reruns vs the full ~50k), so we track their job
+# IDs and drop both the jobs (name matching) and their artifacts.
+VARIANT_JOB_MARKERS = ("rerun_disabled_tests", "mem_leak_check")
+variant_job_ids = set()
+
+def _is_variant_job(name):
+    return any(m in (name or "") for m in VARIANT_JOB_MARKERS)
+
 # Test configs whose sources are listed in the per-arch config (in order).
 _TEST_CONFIGS = ("default", "distributed", "inductor")
 
@@ -122,7 +135,7 @@ def get_latest_commit_sha(pr_id, token):
         sys.exit(1)
 
 def write_test_log_to_file(filename, test_key, jobs, sha):
-    js = [j for j in jobs if test_key in j['name']]
+    js = [j for j in jobs if test_key in j['name'] and not _is_variant_job(j['name'])]
     if len(js) > 0:
         if len(js) > 1:
             print(f"WARNING: Found multiple jobs with key: '{test_key}', selecting first one")
@@ -199,6 +212,11 @@ def get_workflow_jobs(wf, all_attempts=False):
         for i in range(2, math.ceil(response_json['total_count']/page_size) + 1):
             page_json = _fetch_jobs_page(wf['jobs_url'], {**base_params, 'page': i})
             jobs += page_json["jobs"]
+    # Record variant (rerun_disabled_tests / mem_leak_check) job IDs so their
+    # near-empty artifacts can be excluded from the S3 download below.
+    for j in jobs:
+        if _is_variant_job(j.get('name', '')):
+            variant_job_ids.add(str(j['id']))
     return jobs
 
 def derive_shard_count(wf, job_prefix, test_config, fallback):
@@ -222,6 +240,8 @@ def derive_shard_count(wf, job_prefix, test_config, fallback):
     )
     totals = {}
     for job in jobs:
+        if _is_variant_job(job.get("name", "")):
+            continue
         m = pat.search(job.get("name", ""))
         if m:
             total = int(m.group(1))
@@ -431,11 +451,19 @@ def download_xml_files(workflow_run_id, workflow_run_attempts, prefixes=[], allo
                 artifact_paths += found
                 break
 
-    # Filter out rerun_disabled_tests artifacts (same prefix, different job)
+    # Filter out variant (rerun_disabled_tests / mem_leak_check) artifacts. They
+    # share the normal shard's prefix, so match by name AND by the variant job
+    # IDs recorded in get_workflow_jobs (the S3 artifact name embeds "_<jobid>"
+    # but does not always contain the variant marker itself).
     before = len(artifact_paths)
-    artifact_paths = [p for p in artifact_paths if "rerun_disabled" not in p.name]
+    artifact_paths = [
+        p for p in artifact_paths
+        if "rerun_disabled" not in p.name
+        and "mem_leak_check" not in p.name
+        and not any(f"_{vid}" in p.name for vid in variant_job_ids)
+    ]
     if before != len(artifact_paths):
-        print(f"  Filtered out {before - len(artifact_paths)} rerun_disabled artifacts")
+        print(f"  Filtered out {before - len(artifact_paths)} variant (rerun_disabled/mem_leak_check) artifacts")
 
     # Fall back to GHA artifacts if S3 returned nothing
     if len(artifact_paths) == 0:
