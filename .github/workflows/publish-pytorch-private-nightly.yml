@@ -1,0 +1,82 @@
+name: Publish pytorch-nightly (upstream CI image + built torch)
+
+# Nightly: take the pytorch/pytorch ROCm CI image at the latest trunk commit,
+# install the CI-built wheel and matching source into that image, then publish
+# it to Docker Hub.
+
+on:
+  schedule:
+    - cron: "0 7 * * *"   # daily at 07:00 UTC
+  workflow_dispatch:
+    inputs:
+      source_workflow:
+        description: "Upstream pytorch/pytorch workflow file that builds the ROCm CI wheel"
+        type: string
+        default: "trunk.yml"
+      commit:
+        description: "pytorch/pytorch commit to use (default: latest main with a successful build + artifact)"
+        type: string
+        default: ""
+      push_tag:
+        description: "Primary Docker Hub tag"
+        type: string
+        default: "nightly"
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: rocm/pytorch-nightly
+  UPSTREAM_BRANCH: main
+  SOURCE_WORKFLOW: ${{ inputs.source_workflow || 'trunk.yml' }}
+  PUSH_TAG: ${{ inputs.push_tag || 'nightly' }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout workflow scripts
+        uses: actions/checkout@v4
+
+      - name: Install script dependencies
+        run: python3 -m pip install --user pyyaml
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERUSERNAME }}
+          password: ${{ secrets.DOCKERTOKEN || secrets.DCKRPAT }}
+
+      - name: Publish upstream PyTorch ROCm CI image
+        id: publish
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          INPUT_COMMIT: ${{ inputs.commit }}
+        run: |
+          args=(
+            --workflow "${SOURCE_WORKFLOW}"
+            --branch "${UPSTREAM_BRANCH}"
+            --image "${REGISTRY}/${IMAGE_NAME}"
+            --tag "${PUSH_TAG}"
+            --push
+          )
+          if [[ -n "${INPUT_COMMIT}" ]]; then
+            args+=(--commit "${INPUT_COMMIT}")
+          fi
+
+          python3 .automation_scripts/rocm_ci_debug_env/pytorch_rocm_ci_debug_env.py publish "${args[@]}"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## pytorch-nightly publish"
+            echo ""
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| upstream commit | \`${{ steps.publish.outputs.commit }}\` |"
+            echo "| source CI image | \`${{ steps.publish.outputs.image_ref }}\` |"
+            echo "| build label | \`${{ steps.publish.outputs.build_label }}\` |"
+            echo "| pushed tags | \`${{ steps.publish.outputs.primary_tag }}\`, \`${{ steps.publish.outputs.dated_tag }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
