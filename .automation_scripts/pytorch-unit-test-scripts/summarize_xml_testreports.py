@@ -69,41 +69,6 @@ def _extract_shard(dirname):
         return f"{m.group(1)}/{m.group(2)}"
     return ""
 
-def _canonical_distributed_config(test_file, test_config):
-    """Fold the CUDA-only distributed test split introduced by pytorch#189232.
-
-    #189232 hived the single-GPU (non-multigpu) distributed tests out of the
-    'distributed' config and onto CUDA's cheaper 1-GPU 'default' runner, while
-    ROCm (and CPU) still run the whole distributed suite under 'distributed'.
-    Because we key on (test_file, ..., test_config), a CUDA-'default' result
-    then can't line up with the matching ROCm-'distributed' result, so the same
-    passing test double-counts as MISSED on both sides.
-
-    Map default -> distributed for distributed.* test files so the two stacks
-    match again. Scoped to distributed.* files only, so genuine default/inductor
-    results are left untouched (no risk of masking a real per-config
-    disagreement)."""
-    if test_file.startswith("distributed") and test_config == TestConfigName.default.name:
-        return TestConfigName.distributed.name
-    return test_config
-
-def _fold_distributed_config(test_cases):
-    """Apply _canonical_distributed_config to a parsed testcase dict.
-
-    The config lives in the last element of the (test_file, ..., test_config)
-    key. On collision (the same test seen under both configs) keep the
-    highest-priority status so a PASSED result isn't lost to a MISSED one."""
-    folded = {}
-    for key, case in test_cases.items():
-        new_config = _canonical_distributed_config(key[0], key[-1])
-        if new_config != key[-1]:
-            key = key[:-1] + (new_config,)
-            case["test_config"] = new_config
-        existing = folded.get(key)
-        if existing is None or _status_priority(case) > _status_priority(existing):
-            folded[key] = case
-    return folded
-
 def parse_xml_reports_as_dict(workflow_run_id, workflow_run_attempt, tag, path="."):
     test_config = ""
     test_cases = {}
@@ -277,7 +242,6 @@ def summarize_xml_files(args):
     # TODO: Does it matter what the workflow_run_attempt is set to below??
     # test_cases is dict of dicts, with keys as tuple of test_file, test_class, test_name and test_config
     test_cases_set1 = parse_xml_reports_as_dict(-1, -1, 'testcase', set1_path)
-    test_cases_set1 = _fold_distributed_config(test_cases_set1)
     for (k,v) in list(test_cases_set1.items()):
         if v['test_config'] == TestConfigName.default.name:
             ROCM_DEFAULT += 1
@@ -311,7 +275,6 @@ def summarize_xml_files(args):
               "set2 path not specified correctly, should be different from set1 path"
       test_cases_set2_running_time = parse_xml_reports_as_dict(-1, -1, 'testsuite', set2_path)
       test_cases_set2 = parse_xml_reports_as_dict(-1, -1, 'testcase', set2_path)
-      test_cases_set2 = _fold_distributed_config(test_cases_set2)
       for (k,v) in list(test_cases_set2.items()):
           if v['test_config'] == TestConfigName.default.name:
               CUDA_DEFAULT += 1
@@ -359,10 +322,7 @@ def summarize_xml_files(args):
     test_file_shards_CUDA: Dict[Tuple[str], set] = {}
     for (k,v) in list(test_cases_set1_running_time.items()):
           test_file_name = k[0]
-          # Fold the distributed split (pytorch#189232) so per-file times line
-          # up with the already-folded per-file counts; otherwise distributed.*
-          # files show a phantom 'default' row with import time but 0 tests.
-          test_config_name = _canonical_distributed_config(test_file_name, k[2])
+          test_config_name = k[2]
           tar_tup_rocm = (test_file_name, test_config_name,)
           test_file_shards_ROCm.setdefault(tar_tup_rocm, set())
           if v.get("shard"):
@@ -373,7 +333,7 @@ def summarize_xml_files(args):
               test_file_level_ROCm[ ( test_file_name, test_config_name ) ] += v["running_time_xml"]
     for (k,v) in list(test_cases_set2_running_time.items()):
           test_file_name = k[0]
-          test_config_name = _canonical_distributed_config(test_file_name, k[2])
+          test_config_name = k[2]
           tar_tup_cuda = (test_file_name, test_config_name)
           test_file_shards_CUDA.setdefault(tar_tup_cuda, set())
           if v.get("shard"):
