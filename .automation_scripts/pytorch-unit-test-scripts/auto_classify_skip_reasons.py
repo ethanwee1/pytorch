@@ -119,6 +119,31 @@ RULES = [
      "file": r"^test_nn$",
      "msg": r"skipIfRocm.*doesn't currently work"},
 
+    # --- Linalg: hipSOLVER xgeev requires ROCm >= 7.14 (linalg.eig via xgeev, pytorch#188720) ---
+    {"reason": "Linalg",
+     "msg": r"hipSOLVER xgeev"},
+    # --- Linalg: ROCm 6.4 regression on linalg ops (householder/decomp) ---
+    {"reason": "Linalg",
+     "msg": r"regression in ROCm 6\.4"},
+
+    # --- Profiler: CUPTI-dependent profiler tests (libcupti / cupti-python) ---
+    {"reason": "Profiler",
+     "msg": r"(?i)cupti"},
+
+    # --- block_table: ROCm does not support paged-KV block_table (varlen attention) ---
+    {"reason": "block_table",
+     "msg": r"ROCm does not support block_table"},
+
+    # --- explicit NVIDIA test: CUDA / SM-gated tests skipped on ROCm ---
+    {"reason": "explicit NVIDIA test",
+     "msg": r"only supported on NVIDIA CUDA"},
+    {"reason": "explicit NVIDIA test",
+     "msg": r"^CUDA-only$"},
+    {"reason": "explicit NVIDIA test",
+     "msg": r"requires CUDA SM80"},
+    {"reason": "explicit NVIDIA test",
+     "msg": r"CUTLASS.*CUDA-only"},
+
     # --- hipSolver/Magma: skipCUDAIfRocm in test_ops for ldl_solve, scaled_dot_product, conv_transpose3d ---
     {"reason": "hipSolver/Magma",
      "msg": r"skipCUDAIfRocm.*doesn't currently work",
@@ -441,6 +466,11 @@ RULES = [
     # Misc: architecture-specific skips
     {"reason": "Misc",
      "msg": r"test skipped on \('gfx"},
+
+    # Misc: generic skipIfRocm pointing at a tracked GitHub issue (no specific
+    # category; heterogeneous inductor/varlen tests)
+    {"reason": "Misc",
+     "msg": r"skipIfRocm: https?://"},
 
     # cuFFT-specific
     {"reason": "Misc",
