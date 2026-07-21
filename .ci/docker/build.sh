@@ -190,8 +190,8 @@ case "$tag" in
     ROCM_VERSION=nightly
     TRITON=yes
     KATEX=yes
-    # MI350 (gfx950) runners need gfx950 kernels in the CI build artifact.
-    PYTORCH_ROCM_ARCH="gfx90a;gfx942;gfx950;gfx1100"
+    # rocm-nightly only runs on MI350 (gfx950) runners.
+    PYTORCH_ROCM_ARCH="gfx950"
     ;;
   pytorch-linux-jammy-xpu-n-1-py3)
     ANACONDA_PYTHON_VERSION=3.10
