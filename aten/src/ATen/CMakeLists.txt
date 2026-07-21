@@ -684,6 +684,12 @@ if(USE_ROCM)
   )
   file(GLOB native_hip_bgemm CONFIGURE_DEPENDS "native/hip/bgemm_kernels/*.hip")
   file(GLOB native_hip_ck CONFIGURE_DEPENDS "native/hip/ck*.hip")
+  # composable_kernel has no gfx1250 support yet. If gfx1250 is the only arch,
+  # disable CK GEMM so we do not create ck_gemm with empty HIP_ARCHITECTURES.
+  if(USE_ROCM AND "${PYTORCH_ROCM_ARCH}" STREQUAL "gfx1250")
+    message(WARNING "gfx1250 is the only arch in PYTORCH_ROCM_ARCH: disabling USE_ROCM_CK_GEMM (composable_kernel lacks gfx1250 support)")
+    caffe2_update_option(USE_ROCM_CK_GEMM OFF)
+  endif()
   if(NOT USE_ROCM_CK_GEMM)
     exclude(ATen_HIP_SRCS "${ATen_HIP_SRCS}"
       ${native_hip_bgemm} ${native_hip_ck})
