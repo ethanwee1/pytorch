@@ -295,7 +295,6 @@ install_almalinux() {
 export ROCM_PATH="${ROCM_HOME}"
 export ROCM_HOME="${ROCM_HOME}"
 export PATH="${ROCM_BIN}:\${PATH}"
-export LD_LIBRARY_PATH="${ROCM_HOME}/lib:${ROCM_SYSDEPS_LIB}:\${LD_LIBRARY_PATH:-}"
 ROCM_ENV
     echo "source /etc/rocm_env.sh" >> /etc/bashrc || true
 
