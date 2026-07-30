@@ -1026,8 +1026,22 @@ def main():
 
         folder_list = get_or_create_test_folder(trunk_wf)
 
-        cuda_default_shards = cuda_shards["default"]
-        cuda_dist_shards = cuda_shards["distributed"]
+        # Read the shard totals upstream actually used from the resolved run's
+        # job names instead of trusting the hardcoded config: pytorch/pytorch
+        # reshards its CUDA test matrix without notice (e.g. default 5 -> 14,
+        # distributed 3 -> 10), and a stale count makes every constructed
+        # "(default, i, 5)" key/"test-reports-...-5" prefix miss the real
+        # "(default, i, 14)" jobs, so no CUDA artifacts download and the whole
+        # parity run fails. derive_shard_count falls back to the config value
+        # when the run has no matching jobs.
+        cuda_default_shards = derive_shard_count(
+            trunk_wf, cuda_job_prefix, "default", cuda_shards["default"]
+        )
+        cuda_dist_shards = derive_shard_count(
+            trunk_wf, cuda_job_prefix, "distributed", cuda_shards["distributed"]
+        )
+        print(f"Using final CUDA shard counts: default={cuda_default_shards}, "
+              f"distributed={cuda_dist_shards}")
 
         # Download logs
         if not args.artifacts_only:
@@ -1106,7 +1120,11 @@ def main():
                 folder_list = get_or_create_test_folder(inductor_wf_cuda)
 
                 cuda_inductor_prefix = CUDA_JOB_PREFIXES["inductor"]
-                cuda_inductor_shards = cuda_shards["inductor"]
+                cuda_inductor_shards = derive_shard_count(
+                    inductor_wf_cuda, cuda_inductor_prefix, "inductor",
+                    cuda_shards["inductor"],
+                )
+                print(f"Using final CUDA inductor shard count {cuda_inductor_shards}")
 
                 # Download logs
                 if not args.artifacts_only:
