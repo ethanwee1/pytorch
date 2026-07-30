@@ -219,6 +219,26 @@ def get_workflow_jobs(wf, all_attempts=False):
             variant_job_ids.add(str(j['id']))
     return jobs
 
+def _modal_shard_total(names, job_prefix, test_config):
+    """Parse shard totals out of a list of job/check-run names of the form
+    '<job_prefix> / <kind> (<config>, <idx>, <total>, ...)' and return the most
+    common <total>, or None when nothing matches."""
+    pat = re.compile(
+        re.escape(job_prefix) + r" / \S+ \(" + re.escape(test_config) + r", \d+, (\d+)"
+    )
+    totals = {}
+    for name in names:
+        if _is_variant_job(name):
+            continue
+        m = pat.search(name)
+        if m:
+            total = int(m.group(1))
+            totals[total] = totals.get(total, 0) + 1
+    if not totals:
+        return None
+    # Most common total wins (guards against a stray reshaped/duplicate job).
+    return sorted(totals.items(), key=lambda kv: (-kv[1], -kv[0]))[0][0]
+
 def derive_shard_count(wf, job_prefix, test_config, fallback):
     """Return the shard total upstream actually used for this (job_prefix,
     test_config), parsed from job names like
@@ -226,30 +246,41 @@ def derive_shard_count(wf, job_prefix, test_config, fallback):
 
     Shard counts differ between an arch's primary workflow and its fallback
     (e.g. mi200 default is 6 shards in rocm-mi200 but 10 in the
-    trunk-rocm-sandbox fallback), so we read the real total from the resolved
-    run instead of assuming the config value - otherwise the constructed
-    "(default, i, 6)" keys miss the actual "(default, i, 10)" jobs. Falls back
-    to `fallback` when the run has no matching jobs.
+    trunk-rocm-sandbox fallback), and upstream reshards without notice (CUDA
+    default 5 -> 14, mi300 default 6 -> 8, mi300 inductor 2 -> 4), so we read
+    the real total from the resolved run instead of assuming the config value -
+    otherwise the constructed "(default, i, 6)" keys miss the actual
+    "(default, i, 8)" jobs and nothing downloads.
+
+    Two sources are consulted, in order:
+      1. the run's jobs API (surfaces CUDA test jobs directly), then
+      2. the commit check-runs API - the ROCm arch workflows run their sharded
+         test jobs inside a reusable workflow (workflow_call), and those shards
+         are NOT returned by the jobs API but ARE returned by check-runs.
+    Falls back to `fallback` only when neither source has a matching job.
     """
     try:
         jobs = get_workflow_jobs(wf)
     except Exception:
-        return fallback
-    pat = re.compile(
-        re.escape(job_prefix) + r" / \S+ \(" + re.escape(test_config) + r", \d+, (\d+)"
+        jobs = []
+    total = _modal_shard_total(
+        (j.get("name", "") for j in jobs), job_prefix, test_config
     )
-    totals = {}
-    for job in jobs:
-        if _is_variant_job(job.get("name", "")):
-            continue
-        m = pat.search(job.get("name", ""))
-        if m:
-            total = int(m.group(1))
-            totals[total] = totals.get(total, 0) + 1
-    if not totals:
-        return fallback
-    # Most common total wins (guards against a stray reshaped/duplicate job).
-    return sorted(totals.items(), key=lambda kv: (-kv[1], -kv[0]))[0][0]
+    if total is not None:
+        return total
+    # ROCm reusable-workflow shards only show up in check-runs.
+    sha = wf.get("head_sha") if isinstance(wf, dict) else None
+    if sha:
+        try:
+            check_runs = get_check_runs_for_commit(sha, job_prefix)
+        except Exception:
+            check_runs = []
+        total = _modal_shard_total(
+            (cr.get("name", "") for cr in check_runs), job_prefix, test_config
+        )
+        if total is not None:
+            return total
+    return fallback
 
 def get_check_runs_for_commit(sha, prefix):
     """Get check runs for a commit filtered by name prefix.
@@ -1026,8 +1057,22 @@ def main():
 
         folder_list = get_or_create_test_folder(trunk_wf)
 
-        cuda_default_shards = cuda_shards["default"]
-        cuda_dist_shards = cuda_shards["distributed"]
+        # Read the shard totals upstream actually used from the resolved run's
+        # job names instead of trusting the hardcoded config: pytorch/pytorch
+        # reshards its CUDA test matrix without notice (e.g. default 5 -> 14,
+        # distributed 3 -> 10), and a stale count makes every constructed
+        # "(default, i, 5)" key/"test-reports-...-5" prefix miss the real
+        # "(default, i, 14)" jobs, so no CUDA artifacts download and the whole
+        # parity run fails. derive_shard_count falls back to the config value
+        # when the run has no matching jobs.
+        cuda_default_shards = derive_shard_count(
+            trunk_wf, cuda_job_prefix, "default", cuda_shards["default"]
+        )
+        cuda_dist_shards = derive_shard_count(
+            trunk_wf, cuda_job_prefix, "distributed", cuda_shards["distributed"]
+        )
+        print(f"Using final CUDA shard counts: default={cuda_default_shards}, "
+              f"distributed={cuda_dist_shards}")
 
         # Download logs
         if not args.artifacts_only:
@@ -1106,7 +1151,11 @@ def main():
                 folder_list = get_or_create_test_folder(inductor_wf_cuda)
 
                 cuda_inductor_prefix = CUDA_JOB_PREFIXES["inductor"]
-                cuda_inductor_shards = cuda_shards["inductor"]
+                cuda_inductor_shards = derive_shard_count(
+                    inductor_wf_cuda, cuda_inductor_prefix, "inductor",
+                    cuda_shards["inductor"],
+                )
+                print(f"Using final CUDA inductor shard count {cuda_inductor_shards}")
 
                 # Download logs
                 if not args.artifacts_only:
