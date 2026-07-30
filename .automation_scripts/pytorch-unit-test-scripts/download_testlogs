@@ -217,6 +217,34 @@ def matches_job_prefix(job_name, prefix):
     """Match the exact CUDA job family without also matching -debug/-sm86 jobs."""
     return job_name.startswith(f"{prefix} / ")
 
+def derive_shard_total(jobs, job_prefix, test_config, fallback):
+    """Return the shard total upstream actually used for this (job_prefix,
+    test_config), parsed from job names like
+    '<job_prefix> / <kind> (<config>, <idx>, <total>, ...)' -> <total>.
+
+    pytorch/pytorch reshards its test matrices without notice (e.g. CUDA
+    default 5 -> 14, distributed 3 -> 10). A stale hardcoded count makes every
+    constructed "(default, i, 5)" key and "test-reports-...-5" artifact prefix
+    miss the real "(default, i, 14)" jobs, so nothing downloads and the parity
+    run fails. Reading the real total from the resolved run's job names keeps
+    us in sync automatically. Falls back to `fallback` when no matching job is
+    found (rerun_disabled/mem_leak_check variants share the shard's total, so
+    they do not skew the count).
+    """
+    pat = re.compile(
+        re.escape(job_prefix) + r" / \S+ \(" + re.escape(test_config) + r", \d+, (\d+)"
+    )
+    totals = {}
+    for job in jobs or []:
+        m = pat.search(job.get("name", ""))
+        if m:
+            total = int(m.group(1))
+            totals[total] = totals.get(total, 0) + 1
+    if not totals:
+        return fallback
+    # Most common total wins (guards against a stray reshaped/duplicate job).
+    return sorted(totals.items(), key=lambda kv: (-kv[1], -kv[0]))[0][0]
+
 # CUDA test jobs are named "test-osdc" on main but plain "test" on PRs, so we
 # probe both spellings (in priority order) from the shared config.
 CUDA_TEST_KINDS = tuple(PARITY_CONFIG["cuda"]["test_kinds"])
@@ -925,8 +953,17 @@ def main():
 
         folder_list = get_or_create_test_folder(trunk_wf)
 
-        cuda_default_shards = cuda_shards["default"]
-        cuda_dist_shards = cuda_shards["distributed"]
+        # Read the shard totals upstream actually used from the resolved run's
+        # CUDA job names instead of trusting the hardcoded config, which drifts
+        # whenever pytorch/pytorch reshards its matrix (see derive_shard_total).
+        cuda_default_shards = derive_shard_total(
+            all_cuda_jobs, cuda_job_prefix, "default", cuda_shards["default"]
+        )
+        cuda_dist_shards = derive_shard_total(
+            all_cuda_jobs, cuda_job_prefix, "distributed", cuda_shards["distributed"]
+        )
+        print(f"Using final CUDA shard counts: default={cuda_default_shards}, "
+              f"distributed={cuda_dist_shards}")
 
         # Download logs
         if not args.artifacts_only:
@@ -995,7 +1032,11 @@ def main():
             folder_list = get_or_create_test_folder(inductor_wf_cuda)
 
             cuda_inductor_prefix = CUDA_JOB_PREFIXES["inductor"]
-            cuda_inductor_shards = cuda_shards["inductor"]
+            cuda_inductor_shards = derive_shard_total(
+                inductor_cuda_jobs, cuda_inductor_prefix, "inductor",
+                cuda_shards["inductor"],
+            )
+            print(f"Using final CUDA inductor shard count {cuda_inductor_shards}")
 
             # Download logs
             if not args.artifacts_only:
