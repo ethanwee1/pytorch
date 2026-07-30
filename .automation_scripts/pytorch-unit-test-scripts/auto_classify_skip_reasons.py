@@ -53,6 +53,7 @@ RULES = [
     # Misc arch rule.
     {"reason": "PT2.0 - Convolution",
      "msg": r"test skipped on \('gfx",
+     "file": r"^inductor\.test_torchinductor$",
      "name": r"(?i)conv2d_backward"},
 
     # --- bfloat16_SDPA_ME: dropout mask in test_transformers with bfloat16 in TEST NAME ---
