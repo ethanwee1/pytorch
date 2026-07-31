@@ -217,33 +217,67 @@ def matches_job_prefix(job_name, prefix):
     """Match the exact CUDA job family without also matching -debug/-sm86 jobs."""
     return job_name.startswith(f"{prefix} / ")
 
-def derive_shard_total(jobs, job_prefix, test_config, fallback):
-    """Return the shard total upstream actually used for this (job_prefix,
-    test_config), parsed from job names like
-    '<job_prefix> / <kind> (<config>, <idx>, <total>, ...)' -> <total>.
-
-    pytorch/pytorch reshards its test matrices without notice (e.g. CUDA
-    default 5 -> 14, distributed 3 -> 10). A stale hardcoded count makes every
-    constructed "(default, i, 5)" key and "test-reports-...-5" artifact prefix
-    miss the real "(default, i, 14)" jobs, so nothing downloads and the parity
-    run fails. Reading the real total from the resolved run's job names keeps
-    us in sync automatically. Falls back to `fallback` when no matching job is
-    found (rerun_disabled/mem_leak_check variants share the shard's total, so
-    they do not skew the count).
-    """
+def _modal_shard_total(names, job_prefix, test_config):
+    """Most common <total> parsed from names like
+    '<job_prefix> / <kind> (<config>, <idx>, <total>, ...)'; None if nothing
+    matches. rerun_disabled/mem_leak_check variants share the shard's total so
+    they do not skew the count."""
     pat = re.compile(
         re.escape(job_prefix) + r" / \S+ \(" + re.escape(test_config) + r", \d+, (\d+)"
     )
     totals = {}
-    for job in jobs or []:
-        m = pat.search(job.get("name", ""))
+    for name in names:
+        m = pat.search(name)
         if m:
             total = int(m.group(1))
             totals[total] = totals.get(total, 0) + 1
     if not totals:
-        return fallback
+        return None
     # Most common total wins (guards against a stray reshaped/duplicate job).
     return sorted(totals.items(), key=lambda kv: (-kv[1], -kv[0]))[0][0]
+
+def derive_shard_count(wf, job_prefix, test_config, fallback):
+    """Return the real shard total upstream used for (job_prefix, test_config),
+    for ALL architectures (CUDA trunk + every ROCm arch: mi350/mi300/mi200/...).
+
+    pytorch/pytorch reshards its matrices without notice (CUDA default 5 -> 14,
+    distributed 3 -> 10; mi300 default 6 -> 8, inductor 2 -> 4). A stale
+    hardcoded count makes the constructed "(default, i, 6)" keys and
+    "test-reports-...-6" prefixes miss the real jobs, so nothing downloads and
+    the run fails / is flagged incomplete.
+
+    Two sources are consulted, in order:
+      1. the run's jobs API - surfaces CUDA test jobs and the ROCm jobs that
+         run directly in a workflow (e.g. rocm-mi350 shards inside trunk), then
+      2. the commit check-runs API - the standalone ROCm arch workflows
+         (rocm-mi300, rocm-mi200, periodic-rocm-*, inductor-rocm-*) run their
+         sharded test jobs inside a reusable workflow (workflow_call), and
+         those shards are NOT returned by the jobs API but ARE returned by
+         check-runs.
+    Falls back to `fallback` only when neither source has a matching job.
+    """
+    try:
+        jobs = get_workflow_jobs(wf)
+    except Exception:
+        jobs = []
+    total = _modal_shard_total(
+        (j.get("name", "") for j in jobs), job_prefix, test_config
+    )
+    if total is not None:
+        return total
+    # ROCm reusable-workflow shards only show up in check-runs.
+    sha = wf.get("head_sha") if isinstance(wf, dict) else None
+    if sha:
+        try:
+            check_runs = get_check_runs_for_commit(sha, job_prefix)
+        except Exception:
+            check_runs = []
+        total = _modal_shard_total(
+            (cr.get("name", "") for cr in check_runs), job_prefix, test_config
+        )
+        if total is not None:
+            return total
+    return fallback
 
 # CUDA test jobs are named "test-osdc" on main but plain "test" on PRs, so we
 # probe both spellings (in priority order) from the shared config.
@@ -770,10 +804,9 @@ def main():
         # HUD link: https://hud.pytorch.org/hud/pytorch/pytorch/main/1?per_page=50&name_filter=rocm
         # Make sure "Hide unstable jobs" is unselected, in case ROCm jobs are marked as unstable
     
-        if arch == "mi350":
-            dist_shards = 3 if not periodic_fallback_used else rocm_shards["distributed"]
-        else:
-            dist_shards = rocm_shards["distributed"]
+        dist_shards = derive_shard_count(
+            periodic_wf, dist_job_prefix, "distributed", rocm_shards["distributed"]
+        )
         print(f"Using final ROCm shard count {dist_shards} for distributed")
 
         if not args.artifacts_only:
@@ -833,10 +866,9 @@ def main():
         # Download logs
         # If logs aren't found you might want to check the HUD for the correct tags
         # HUD link: https://hud.pytorch.org/hud/pytorch/pytorch/main/1?per_page=50&name_filter=rocm
-        if arch == "mi350":
-            default_shards = 6 if default_fallback_used else rocm_shards["default"]
-        else:
-            default_shards = rocm_shards["default"]
+        default_shards = derive_shard_count(
+            rocm_wf, rocm_job_prefix['default'], "default", rocm_shards["default"]
+        )
         print(f"Using final ROCm shard count {default_shards} for default")
 
         if not args.artifacts_only:
@@ -891,12 +923,15 @@ def main():
 
             folder_list = get_or_create_test_folder(inductor_wf_rocm)
 
-            inductor_shards = rocm_shards["inductor"]
-            print(f"Using final ROCm shard count {inductor_shards} for inductor")
             if inductor_fallback_used and arch in inductor_fallbacks:
                 inductor_job_prefix = inductor_fallbacks[arch][1]
             else:
                 inductor_job_prefix = rocm_job_prefix['inductor']
+            inductor_shards = derive_shard_count(
+                inductor_wf_rocm, inductor_job_prefix, "inductor",
+                rocm_shards["inductor"]
+            )
+            print(f"Using final ROCm shard count {inductor_shards} for inductor")
     
             # Download logs
             if not args.artifacts_only:
@@ -953,14 +988,14 @@ def main():
 
         folder_list = get_or_create_test_folder(trunk_wf)
 
-        # Read the shard totals upstream actually used from the resolved run's
-        # CUDA job names instead of trusting the hardcoded config, which drifts
-        # whenever pytorch/pytorch reshards its matrix (see derive_shard_total).
-        cuda_default_shards = derive_shard_total(
-            all_cuda_jobs, cuda_job_prefix, "default", cuda_shards["default"]
+        # Read the shard totals upstream actually used from the resolved run
+        # instead of trusting the hardcoded config, which drifts whenever
+        # pytorch/pytorch reshards its matrix (see derive_shard_count).
+        cuda_default_shards = derive_shard_count(
+            trunk_wf, cuda_job_prefix, "default", cuda_shards["default"]
         )
-        cuda_dist_shards = derive_shard_total(
-            all_cuda_jobs, cuda_job_prefix, "distributed", cuda_shards["distributed"]
+        cuda_dist_shards = derive_shard_count(
+            trunk_wf, cuda_job_prefix, "distributed", cuda_shards["distributed"]
         )
         print(f"Using final CUDA shard counts: default={cuda_default_shards}, "
               f"distributed={cuda_dist_shards}")
@@ -1032,8 +1067,8 @@ def main():
             folder_list = get_or_create_test_folder(inductor_wf_cuda)
 
             cuda_inductor_prefix = CUDA_JOB_PREFIXES["inductor"]
-            cuda_inductor_shards = derive_shard_total(
-                inductor_cuda_jobs, cuda_inductor_prefix, "inductor",
+            cuda_inductor_shards = derive_shard_count(
+                inductor_wf_cuda, cuda_inductor_prefix, "inductor",
                 cuda_shards["inductor"],
             )
             print(f"Using final CUDA inductor shard count {cuda_inductor_shards}")
@@ -1084,7 +1119,10 @@ def main():
                     error_msg=f"Baseline default workflow not found for {baseline_sha}",
                 )
                 print(f"Baseline default workflow '{ROCmWorkflowNames['default']}' id: {baseline_default_wf['id']}")
-                default_shards = rocm_shards["default"]
+                default_shards = derive_shard_count(
+                    baseline_default_wf, rocm_job_prefix['default'], "default",
+                    rocm_shards["default"]
+                )
 
                 if not args.artifacts_only:
                     baseline_default_logs = [
@@ -1116,7 +1154,10 @@ def main():
                     error_msg=f"Baseline distributed workflow not found for {baseline_sha}",
                 )
                 print(f"Baseline distributed workflow '{ROCmWorkflowNames['distributed']}' id: {baseline_dist_wf['id']}")
-                dist_shards = rocm_shards["distributed"]
+                dist_shards = derive_shard_count(
+                    baseline_dist_wf, rocm_job_prefix['distributed'], "distributed",
+                    rocm_shards["distributed"]
+                )
 
                 if not args.artifacts_only:
                     baseline_dist_logs = [
@@ -1148,7 +1189,10 @@ def main():
                     error_msg=f"Baseline inductor workflow not found for {baseline_sha}",
                 )
                 print(f"Baseline inductor workflow '{ROCmWorkflowNames['inductor']}' id: {baseline_inductor_wf['id']}")
-                inductor_shards = rocm_shards["inductor"]
+                inductor_shards = derive_shard_count(
+                    baseline_inductor_wf, rocm_job_prefix['inductor'], "inductor",
+                    rocm_shards["inductor"]
+                )
 
                 if not args.artifacts_only:
                     baseline_inductor_logs = [
