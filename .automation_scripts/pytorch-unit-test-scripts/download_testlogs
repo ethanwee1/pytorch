@@ -282,6 +282,58 @@ def derive_shard_count(wf, job_prefix, test_config, fallback):
             return total
     return fallback
 
+def _candidate_job_prefixes(names, test_config):
+    """Map each distinct '<prefix>' -> count from names shaped like
+    '<prefix> / <kind> (<test_config>, <idx>, <total>, ...)'."""
+    pat = re.compile(r"^(.+?) / \S+ \(" + re.escape(test_config) + r", \d+, \d+")
+    out = {}
+    for name in names:
+        m = pat.match(name)
+        if m:
+            out[m.group(1)] = out.get(m.group(1), 0) + 1
+    return out
+
+def resolve_job_prefix(wf, test_config, configured_prefix):
+    """Return the '<prefix>' upstream actually uses for this arch's
+    <test_config> test jobs, so a drifted configured prefix self-heals instead
+    of silently matching nothing.
+
+    The job-name prefix in parity_job_config.json drifts whenever upstream
+    bumps the OS/python/compiler or renames a runner tag (e.g. the nightly
+    'gfx942' -> 'mi350' rename, or py3.10 -> py3.12), which used to require a
+    manual config edit each time. Candidates are gathered from the run's jobs
+    API and the commit check-runs API (ROCm arch shards run in a reusable
+    workflow, so they only appear in check-runs). If the configured prefix is
+    present we keep it unchanged; otherwise we pick the candidate most similar
+    to it (shared os/py/arch tokens); if nothing matches we return the
+    configured value untouched.
+    """
+    names = []
+    try:
+        names += [j.get("name", "") for j in get_workflow_jobs(wf)]
+    except Exception:
+        pass
+    sha = wf.get("head_sha") if isinstance(wf, dict) else None
+    if sha:
+        try:
+            names += [cr.get("name", "") for cr in get_check_runs_for_commit(sha, "")]
+        except Exception:
+            pass
+    candidates = _candidate_job_prefixes(names, test_config)
+    if not candidates or configured_prefix in candidates:
+        return configured_prefix
+    import difflib
+    best = max(
+        candidates,
+        key=lambda p: (
+            difflib.SequenceMatcher(None, p, configured_prefix).ratio(),
+            candidates[p],
+        ),
+    )
+    print(f"NOTE: configured job prefix '{configured_prefix}' not found for "
+          f"'{test_config}'; using detected prefix '{best}'")
+    return best
+
 def get_check_runs_for_commit(sha, prefix):
     """Get check runs for a commit filtered by name prefix.
 
@@ -861,6 +913,7 @@ def main():
                 dist_job_prefix = periodic_fallbacks[arch][1]
             else:
                 dist_job_prefix = rocm_job_prefix['distributed']
+            dist_job_prefix = resolve_job_prefix(periodic_wf, "distributed", dist_job_prefix)
 
             folder_list = get_or_create_test_folder(periodic_wf)
 
@@ -931,6 +984,7 @@ def main():
             # Download logs
             # If logs aren't found you might want to check the HUD for the correct tags
             # HUD link: https://hud.pytorch.org/hud/pytorch/pytorch/main/1?per_page=50&name_filter=rocm
+            rocm_job_prefix['default'] = resolve_job_prefix(rocm_wf, "default", rocm_job_prefix['default'])
             default_shards = derive_shard_count(rocm_wf, rocm_job_prefix['default'], "default", rocm_shards["default"])
             print(f"Using final ROCm shard count {default_shards} for default")
 
@@ -999,6 +1053,7 @@ def main():
                 inductor_job_prefix = inductor_fallbacks[arch][1]
             else:
                 inductor_job_prefix = rocm_job_prefix['inductor']
+            inductor_job_prefix = resolve_job_prefix(inductor_wf_rocm, "inductor", inductor_job_prefix)
             inductor_shards = derive_shard_count(inductor_wf_rocm, inductor_job_prefix, "inductor", rocm_shards["inductor"])
             print(f"Using final ROCm shard count {inductor_shards} for inductor")
     
@@ -1203,11 +1258,12 @@ def main():
                     error_msg=f"Baseline default workflow not found for {baseline_sha}",
                 )
                 print(f"Baseline default workflow '{ROCmWorkflowNames['default']}' id: {baseline_default_wf['id']}")
-                default_shards = rocm_shards["default"]
+                baseline_default_prefix = resolve_job_prefix(baseline_default_wf, "default", rocm_job_prefix['default'])
+                default_shards = derive_shard_count(baseline_default_wf, baseline_default_prefix, "default", rocm_shards["default"])
 
                 if not args.artifacts_only:
                     baseline_default_logs = [
-                        [f"{baseline_prefix}rocm{i}.txt", f"{rocm_job_prefix['default']} / test (default, {i}, {default_shards}"]
+                        [f"{baseline_prefix}rocm{i}.txt", f"{baseline_default_prefix} / test (default, {i}, {default_shards}"]
                         for i in range(1, default_shards + 1)
                     ]
                     download_logs(baseline_default_wf, baseline_default_logs, test_folder)
@@ -1235,11 +1291,12 @@ def main():
                     error_msg=f"Baseline distributed workflow not found for {baseline_sha}",
                 )
                 print(f"Baseline distributed workflow '{ROCmWorkflowNames['distributed']}' id: {baseline_dist_wf['id']}")
-                dist_shards = rocm_shards["distributed"]
+                baseline_dist_prefix = resolve_job_prefix(baseline_dist_wf, "distributed", rocm_job_prefix['distributed'])
+                dist_shards = derive_shard_count(baseline_dist_wf, baseline_dist_prefix, "distributed", rocm_shards["distributed"])
 
                 if not args.artifacts_only:
                     baseline_dist_logs = [
-                        [f"{baseline_prefix}rocm_dist{i}.txt", f"{rocm_job_prefix['distributed']} / test (distributed, {i}, {dist_shards}"]
+                        [f"{baseline_prefix}rocm_dist{i}.txt", f"{baseline_dist_prefix} / test (distributed, {i}, {dist_shards}"]
                         for i in range(1, dist_shards + 1)
                     ]
                     download_logs(baseline_dist_wf, baseline_dist_logs, test_folder)
@@ -1267,11 +1324,12 @@ def main():
                     error_msg=f"Baseline inductor workflow not found for {baseline_sha}",
                 )
                 print(f"Baseline inductor workflow '{ROCmWorkflowNames['inductor']}' id: {baseline_inductor_wf['id']}")
-                inductor_shards = rocm_shards["inductor"]
+                baseline_inductor_prefix = resolve_job_prefix(baseline_inductor_wf, "inductor", rocm_job_prefix['inductor'])
+                inductor_shards = derive_shard_count(baseline_inductor_wf, baseline_inductor_prefix, "inductor", rocm_shards["inductor"])
 
                 if not args.artifacts_only:
                     baseline_inductor_logs = [
-                        [f"{baseline_prefix}rocm_inductor{i}.txt", f"{rocm_job_prefix['inductor']} / test (inductor, {i}, {inductor_shards}"]
+                        [f"{baseline_prefix}rocm_inductor{i}.txt", f"{baseline_inductor_prefix} / test (inductor, {i}, {inductor_shards}"]
                         for i in range(1, inductor_shards + 1)
                     ]
                     download_logs(baseline_inductor_wf, baseline_inductor_logs, test_folder)
