@@ -227,9 +227,14 @@ if(HIP_FOUND)
 
   # Optional components.
   find_package_and_print_version(hipsparselt)  # Will be required when ready.
-  # ROCm 8.0 and later requires libhipcxx! This should be marked as
-  # 'REQUIRED' once minimal ROCm version is bumped to 8.0 or later.
-  find_package_and_print_version(libhipcxx)
+  # ROCm 10+ ships hipCUB against CCCL 3.x via libhipcxx; require the CMake
+  # package so ROCM_INCLUDE_DIRS picks up libhipcxx headers. Optional on
+  # older ROCm where hipCUB still bundles its own limits backports.
+  if(ROCM_VERSION_DEV VERSION_GREATER_EQUAL "10.0")
+    find_package_and_print_version(libhipcxx REQUIRED)
+  else()
+    find_package_and_print_version(libhipcxx)
+  endif()
 
   list(REMOVE_DUPLICATES ROCM_INCLUDE_DIRS)
 
