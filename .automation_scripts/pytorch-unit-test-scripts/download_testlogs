@@ -332,6 +332,7 @@ def _shorten_unzipped_dirs():
     failing job from the parity summary.
     """
     from pathlib import Path
+    job_ids = []
     for d in sorted(Path(".").glob("unzipped-*")):
         if not d.is_dir():
             continue
@@ -346,11 +347,39 @@ def _shorten_unzipped_dirs():
             job_id_match = re.search(r'_(\d{6,})(?:\.zip)?$', d.name)
             if job_id_match:
                 short_name += f"_{job_id_match.group(1)}"
+                job_ids.append(job_id_match.group(1))
             if not Path(short_name).exists():
                 d.rename(short_name)
                 print(f"  Renamed {d.name} -> {short_name}")
             else:
                 print(f"  WARNING: {short_name} already exists, keeping {d.name}")
+    return job_ids
+
+def _record_shard_run_ids(job_ids, workflow_run_id):
+    """Persist a job_id -> upstream run_id map ("_wf_run_ids.json") next to the
+    shard dirs so summarize_xml_testreports.py can build a correct job URL for
+    each shard.
+
+    The default/distributed/inductor configs resolve to DIFFERENT upstream runs
+    (e.g. mi350 default+inductor come from a trunk push while distributed comes
+    from periodic / a trunk fallback), yet they all unzip into the same rocm_xml
+    folder. The legacy single "_wf_run_id" (last write wins) therefore mislabels
+    shards from the other runs, producing "busted" job URLs that point at a run
+    the job never belonged to. Recording the run id per job id fixes that.
+    """
+    if not job_ids:
+        return
+    mapping = {}
+    if os.path.isfile("_wf_run_ids.json"):
+        try:
+            with open("_wf_run_ids.json") as f:
+                mapping = json.load(f)
+        except Exception:
+            mapping = {}
+    for jid in job_ids:
+        mapping[str(jid)] = str(workflow_run_id)
+    with open("_wf_run_ids.json", "w") as f:
+        json.dump(mapping, f)
 
 def download_xml_files(workflow_run_id, workflow_run_attempts, prefixes=[], allowed_substrings=None):
     # Get from S3 artifacts.
@@ -410,8 +439,12 @@ def download_xml_files(workflow_run_id, workflow_run_attempts, prefixes=[], allo
     for path in artifact_paths:
             unzip(path)
 
-    _shorten_unzipped_dirs()
+    job_ids = _shorten_unzipped_dirs()
+    # Record which upstream run each shard's job id came from so job URLs are
+    # built per-shard (different configs come from different runs).
+    _record_shard_run_ids(job_ids, workflow_run_id)
 
+    # Kept for backward compatibility with older summarize layouts.
     with open("_wf_run_id", "w") as f:
         f.write(str(workflow_run_id))
 
