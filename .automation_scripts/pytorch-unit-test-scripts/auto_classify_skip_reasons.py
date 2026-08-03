@@ -497,6 +497,22 @@ RULES = [
     {"reason": "PT2.0 - Inductor",
      "file": r"^inductor\.test_loop_ordering$"},
 
+    # --- inductor.test_triton_kernels (Triton HOP / custom-dialect mutation
+    # analysis tests). AI-analysis flagged these as churning an unrelated
+    # skip-category when new upstream tests land; they belong to Inductor. ---
+    {"reason": "PT2.0 - Inductor",
+     "file": r"^inductor[./]test_triton_kernels$"},
+
+    # --- inductor.test_triton_heuristics (skipUnless(HAS_GPU_AND_TRITON)
+    # guards; GPU/Triton-required inductor tests) ---
+    {"reason": "PT2.0 - Inductor",
+     "file": r"^inductor[./]test_triton_heuristics$"},
+
+    # --- dynamo.test_backends (TVM and other dynamo backend tests; e.g. TVM
+    # backend tests enabled/skipped by apache-tvm availability) ---
+    {"reason": "PT2.0 - Dynamo",
+     "file": r"^dynamo[./]test_backends$"},
+
     # --- torch_np / numpy tests ---
     {"reason": "NumPy",
      "file": r"^torch_np\."},
