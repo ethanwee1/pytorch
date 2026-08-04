@@ -131,6 +131,8 @@ RULES = [
      "msg": r"Skipped for ROCm!"},
     {"reason": "hipSolver/Magma",
      "msg": r"test_cow_input does not work with efficient attention on ROCM"},
+    {"reason": "hipSolver/Magma",
+     "msg": r"hipSOLVER DnXsytrs requires ROCm >= 7\.14"},
 
     # --- Compiler issue: "Skipped!" in test_ops for specific compiler-related tests ---
     {"reason": "Compiler issue",
@@ -507,6 +509,10 @@ RULES = [
     # guards; GPU/Triton-required inductor tests) ---
     {"reason": "PT2.0 - Inductor",
      "file": r"^inductor[./]test_triton_heuristics$"},
+
+    # --- inductor.test_fused_attention (SDPA pattern-rewriter tests) ---
+    {"reason": "PT2.0 - Inductor",
+     "file": r"^inductor[./]test_fused_attention$"},
 
     # --- dynamo.test_backends (TVM and other dynamo backend tests; e.g. TVM
     # backend tests enabled/skipped by apache-tvm availability) ---
