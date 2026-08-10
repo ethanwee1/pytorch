@@ -40,6 +40,7 @@ from torch.testing._internal.common_utils import (
     run_tests,
     TEST_HPU,
     TEST_WITH_DEV_DBG_ASAN,
+    TEST_WITH_ROCM,
 )
 
 
@@ -230,6 +231,12 @@ class TestParityWithDDP(FSDPTest):
         cpu_offload: CPUOffload,
         sharding_strategy: Optional[ShardingStrategy],
     ):
+        if (
+            TEST_WITH_ROCM
+            and cpu_offload.offload_params
+            and sharding_strategy == ShardingStrategy.NO_SHARD
+        ):
+            self.skipTest("Skipped to stabilize PyTorch on TheRock CI")
         fsdp_kwargs = {"device_id": device_type.type}
         self.run_subtests(
             self._get_subtest_config(cpu_offload),
