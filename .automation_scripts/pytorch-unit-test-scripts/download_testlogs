@@ -186,13 +186,8 @@ def get_workflow_jobs(wf, all_attempts=False):
             jobs += page_json["jobs"]
     return jobs
 
-def get_check_runs_for_commit(sha, prefix):
-    """Get check runs for a commit filtered by name prefix.
-
-    The workflow jobs API does not return jobs from reusable workflows
-    (workflow_call). The check-runs API returns all jobs regardless of
-    workflow nesting, so we use it as a fallback.
-    """
+def get_all_check_runs_for_commit(sha):
+    """Return every check run on a commit (paginated)."""
     check_runs = []
     page = 1
     while True:
@@ -203,11 +198,113 @@ def get_check_runs_for_commit(sha, prefix):
         )
         data = response.json()
         runs = data.get('check_runs', [])
-        check_runs.extend([cr for cr in runs if prefix in cr.get('name', '')])
+        check_runs.extend(runs)
         if len(runs) < 100:
             break
         page += 1
     return check_runs
+
+def get_check_runs_for_commit(sha, prefix):
+    """Get check runs for a commit filtered by name prefix.
+
+    The workflow jobs API does not return jobs from reusable workflows
+    (workflow_call). The check-runs API returns all jobs regardless of
+    workflow nesting, so we use it as a fallback.
+    """
+    return [
+        check_run for check_run in get_all_check_runs_for_commit(sha)
+        if prefix in check_run.get('name', '')
+    ]
+
+def _workflow_runs_for_commit(sha):
+    """Return all workflow runs for a commit, including reusable workflows."""
+    workflow_runs = []
+    page = 1
+    while True:
+        response = requests.get(
+            "https://api.github.com/repos/pytorch/pytorch/actions/runs",
+            headers=authentication_headers,
+            params={'head_sha': sha, 'per_page': 100, 'page': page},
+        )
+        runs = response.json().get('workflow_runs', [])
+        workflow_runs.extend(runs)
+        if len(runs) < 100:
+            break
+        page += 1
+    return workflow_runs
+
+def _collect_scoped_run_ids(wf):
+    """Collect this workflow run and its nested reusable-workflow run IDs."""
+    run_ids = {int(wf['id'])}
+    sha = wf.get('head_sha')
+    if not sha:
+        return run_ids
+
+    runs_by_path = {}
+    for run in _workflow_runs_for_commit(sha):
+        path = (run.get('path') or '').lstrip('/')
+        if path:
+            runs_by_path.setdefault(path, []).append(run)
+
+    pending = [wf]
+    inspected = set()
+    while pending:
+        current = pending.pop()
+        current_id = int(current['id'])
+        if current_id in inspected:
+            continue
+        inspected.add(current_id)
+        response = requests.get(
+            f"https://api.github.com/repos/pytorch/pytorch/actions/runs/{current_id}",
+            headers=authentication_headers,
+        )
+        if response.status_code != 200:
+            continue
+        for referenced in response.json().get('referenced_workflows') or []:
+            referenced_path = (referenced.get('path') or '').lstrip('/')
+            if not referenced_path:
+                continue
+            for path, runs in runs_by_path.items():
+                if path == referenced_path or path.endswith(referenced_path):
+                    for run in runs:
+                        run_id = int(run['id'])
+                        if run_id not in run_ids:
+                            run_ids.add(run_id)
+                            pending.append(run)
+    return run_ids
+
+def get_check_runs_for_workflow_runs(sha, run_ids):
+    """Return check runs whose details URL belongs to a scoped run ID."""
+    run_markers = tuple(f"/runs/{run_id}/" for run_id in run_ids)
+    return [
+        check_run for check_run in get_all_check_runs_for_commit(sha)
+        if any(marker in (check_run.get('details_url') or '')
+               for marker in run_markers)
+    ]
+
+_ARCH_PREFIX_TOKENS = {
+    'mi200': ('mi200', 'mi210'),
+    'mi300': ('mi300',),
+    'mi350': ('mi350',),
+    'navi31': ('navi31',),
+    'preview': ('rocm-preview',),
+}
+
+def _is_rocm_job_prefix(prefix):
+    prefix_lower = prefix.lower()
+    return 'rocm' in prefix_lower and 'cuda' not in prefix_lower
+
+def _prefix_matches_arch(arch, prefix, configured_prefix):
+    prefix_lower = prefix.lower()
+    tokens = _ARCH_PREFIX_TOKENS.get(arch, ())
+    if any(token in prefix_lower for token in tokens):
+        return True
+    if prefix == configured_prefix:
+        return True
+    configured_lower = configured_prefix.lower()
+    if not any(token in configured_lower for token in tokens):
+        return _is_rocm_job_prefix(prefix)
+    return False
 
 def get_job_ids_by_prefix(wf, prefix):
     """Get job IDs (as strings) for jobs whose name contains the given prefix."""
@@ -325,7 +422,7 @@ def _candidate_job_prefixes(names, test_config):
             out[m.group(1)] = out.get(m.group(1), 0) + 1
     return out
 
-def resolve_job_prefix(wf, test_config, configured_prefix):
+def resolve_job_prefix(wf, test_config, configured_prefix, arch=None):
     """Return the '<prefix>' upstream actually uses for this arch's
     <test_config> test jobs, so a drifted configured prefix self-heals instead
     of silently matching nothing.
@@ -334,10 +431,11 @@ def resolve_job_prefix(wf, test_config, configured_prefix):
     bumps the OS/python/compiler or renames a runner tag (e.g. the Preview
     'gfx942' -> 'mi350' rename, or py3.10 -> py3.12), which used to require a
     manual config edit each time. Candidates are gathered from the run's jobs
-    API and the commit check-runs API (ROCm arch shards run in a reusable
-    workflow, so they only appear in check-runs). If the configured prefix is
-    present we keep it unchanged; otherwise we pick the candidate most similar
-    to it (shared os/py/arch tokens); if nothing matches we return the
+    API and check-runs scoped to that run and its nested reusable workflows.
+    Only ROCm prefixes for the requested architecture are eligible, so another
+    workflow on the same commit cannot be selected accidentally. If the
+    configured prefix is present we keep it unchanged; otherwise we pick the
+    eligible candidate most similar to it. If nothing matches we return the
     configured value untouched.
     """
     names = []
@@ -348,10 +446,21 @@ def resolve_job_prefix(wf, test_config, configured_prefix):
     sha = wf.get("head_sha") if isinstance(wf, dict) else None
     if sha:
         try:
-            names += [cr.get("name", "") for cr in get_check_runs_for_commit(sha, "")]
+            run_ids = _collect_scoped_run_ids(wf)
+            names += [
+                check_run.get("name", "")
+                for check_run in get_check_runs_for_workflow_runs(sha, run_ids)
+            ]
         except Exception:
             pass
     candidates = _candidate_job_prefixes(names, test_config)
+    candidates = {
+        prefix: count for prefix, count in candidates.items()
+        if _is_rocm_job_prefix(prefix)
+        and (arch is None or _prefix_matches_arch(
+            arch, prefix, configured_prefix
+        ))
+    }
     if not candidates or configured_prefix in candidates:
         return configured_prefix
     import difflib
@@ -948,7 +1057,9 @@ def main():
             dist_job_prefix = periodic_fallbacks[arch][1]
         else:
             dist_job_prefix = rocm_job_prefix['distributed']
-        dist_job_prefix = resolve_job_prefix(periodic_wf, "distributed", dist_job_prefix)
+        dist_job_prefix = resolve_job_prefix(
+            periodic_wf, "distributed", dist_job_prefix, arch=arch
+        )
 
         folder_list = get_or_create_test_folder(periodic_wf)
 
@@ -1022,7 +1133,9 @@ def main():
         # Download logs
         # If logs aren't found you might want to check the HUD for the correct tags
         # HUD link: https://hud.pytorch.org/hud/pytorch/pytorch/main/1?per_page=50&name_filter=rocm
-        rocm_job_prefix['default'] = resolve_job_prefix(rocm_wf, "default", rocm_job_prefix['default'])
+        rocm_job_prefix['default'] = resolve_job_prefix(
+            rocm_wf, "default", rocm_job_prefix['default'], arch=arch
+        )
         default_shards = derive_shard_count(
             rocm_wf, rocm_job_prefix['default'], "default", rocm_shards["default"]
         )
@@ -1087,7 +1200,9 @@ def main():
                 inductor_job_prefix = inductor_fallbacks[arch][1]
             else:
                 inductor_job_prefix = rocm_job_prefix['inductor']
-            inductor_job_prefix = resolve_job_prefix(inductor_wf_rocm, "inductor", inductor_job_prefix)
+            inductor_job_prefix = resolve_job_prefix(
+                inductor_wf_rocm, "inductor", inductor_job_prefix, arch=arch
+            )
             inductor_shards = derive_shard_count(
                 inductor_wf_rocm, inductor_job_prefix, "inductor",
                 rocm_shards["inductor"]
@@ -1283,7 +1398,10 @@ def main():
                     error_msg=f"Baseline default workflow not found for {baseline_sha}",
                 )
                 print(f"Baseline default workflow '{ROCmWorkflowNames['default']}' id: {baseline_default_wf['id']}")
-                baseline_default_prefix = resolve_job_prefix(baseline_default_wf, "default", rocm_job_prefix['default'])
+                baseline_default_prefix = resolve_job_prefix(
+                    baseline_default_wf, "default", rocm_job_prefix['default'],
+                    arch=arch
+                )
                 default_shards = derive_shard_count(
                     baseline_default_wf, baseline_default_prefix, "default",
                     rocm_shards["default"]
@@ -1319,7 +1437,10 @@ def main():
                     error_msg=f"Baseline distributed workflow not found for {baseline_sha}",
                 )
                 print(f"Baseline distributed workflow '{ROCmWorkflowNames['distributed']}' id: {baseline_dist_wf['id']}")
-                baseline_dist_prefix = resolve_job_prefix(baseline_dist_wf, "distributed", rocm_job_prefix['distributed'])
+                baseline_dist_prefix = resolve_job_prefix(
+                    baseline_dist_wf, "distributed",
+                    rocm_job_prefix['distributed'], arch=arch
+                )
                 dist_shards = derive_shard_count(
                     baseline_dist_wf, baseline_dist_prefix, "distributed",
                     rocm_shards["distributed"]
@@ -1355,7 +1476,10 @@ def main():
                     error_msg=f"Baseline inductor workflow not found for {baseline_sha}",
                 )
                 print(f"Baseline inductor workflow '{ROCmWorkflowNames['inductor']}' id: {baseline_inductor_wf['id']}")
-                baseline_inductor_prefix = resolve_job_prefix(baseline_inductor_wf, "inductor", rocm_job_prefix['inductor'])
+                baseline_inductor_prefix = resolve_job_prefix(
+                    baseline_inductor_wf, "inductor",
+                    rocm_job_prefix['inductor'], arch=arch
+                )
                 inductor_shards = derive_shard_count(
                     baseline_inductor_wf, baseline_inductor_prefix, "inductor",
                     rocm_shards["inductor"]
