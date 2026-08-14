@@ -953,9 +953,19 @@ def main():
     rows = []
     with open(args.input, newline='') as f:
         reader = csv.DictReader(f)
-        fieldnames = list(reader.fieldnames)
+        fieldnames = list(reader.fieldnames or [])
         for row in reader:
             rows.append(row)
+
+    # A partial download can legitimately produce an empty parity CSV. There
+    # is nothing to enrich, and failing here would suppress later diagnostic
+    # steps in callers that do not use an always() condition.
+    if not fieldnames:
+        print(
+            f"WARNING: Empty parity CSV {args.input}; skipping classification",
+            file=sys.stderr,
+        )
+        return
 
     col_rocm, col_cuda, col_msg = detect_columns(fieldnames)
 
