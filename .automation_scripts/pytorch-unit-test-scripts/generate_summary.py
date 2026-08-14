@@ -432,6 +432,19 @@ def collect_failed_tests(arch_data, archs, s1_name, s2_name):
     return failed
 
 
+def _is_primary_platform(platform, s1_name):
+    """Return whether a log row belongs to the report's primary side.
+
+    detect_log_failures records the physical platform (``rocm``/``cuda``),
+    while callers can use a display label such as ``preview`` or ``mi300``.
+    """
+    return platform in ('rocm', s1_name)
+
+
+def _is_secondary_platform(platform, s2_name):
+    return platform in ('cuda', s2_name)
+
+
 def _add_cross_arch_info(failed_tests, log_failures, s2_name):
     """Populate 'also_failing_in' for each entry.
 
@@ -446,7 +459,7 @@ def _add_cross_arch_info(failed_tests, log_failures, s2_name):
 
     cuda_log_tuples = set()
     for lf in log_failures or []:
-        if lf.get('platform', '') == s2_name:
+        if _is_secondary_platform(lf.get('platform', ''), s2_name):
             test_class, test_name = _parse_log_failure_names(lf)
             cuda_log_tuples.add((lf.get('test_file', ''), test_class, test_name))
 
@@ -469,7 +482,7 @@ def _add_log_failure_cross_arch(log_failures, failed_tests, s1_name, s2_name):
     by_tuple_archs = defaultdict(set)
 
     for lf in log_failures or []:
-        if lf.get('platform', '') == s1_name:
+        if _is_primary_platform(lf.get('platform', ''), s1_name):
             test_class, test_name = _parse_log_failure_names(lf)
             key = (lf.get('test_file', ''), test_class, test_name)
             by_tuple_archs[key].add(lf.get('arch', ''))
@@ -479,7 +492,7 @@ def _add_log_failure_cross_arch(log_failures, failed_tests, s1_name, s2_name):
 
     cuda_log_tuples = set()
     for lf in log_failures or []:
-        if lf.get('platform', '') == s2_name:
+        if _is_secondary_platform(lf.get('platform', ''), s2_name):
             test_class, test_name = _parse_log_failure_names(lf)
             cuda_log_tuples.add((lf.get('test_file', ''), test_class, test_name))
 
@@ -730,7 +743,7 @@ def _select_rocm_log_failures(log_failures, failed_tests, s1_name):
     best = {}
     order = []
     for lf in (log_failures or []):
-        if lf.get('platform', '') != s1_name:
+        if not _is_primary_platform(lf.get('platform', ''), s1_name):
             continue
         test_class, test_name = _parse_log_failure_names(lf)
         key = (lf.get('arch', ''), _norm_test_file(lf.get('test_file', '')),
@@ -748,6 +761,75 @@ def _select_rocm_log_failures(log_failures, failed_tests, s1_name):
               and existing.get('category') != 'CONSISTENT_FAILURE'):
             best[key] = lf
     return [best[k] for k in order]
+
+
+def collect_log_failed_tests(log_failures, xml_failed_tests, s1_name):
+    """Promote crash/timeout failures without XML into FAILED TESTS rows."""
+    promoted = []
+    for lf in _select_rocm_log_failures(
+            log_failures, xml_failed_tests, s1_name):
+        # A flaky rerun is useful context, but its final status is not FAILED.
+        if lf.get('category', '') == 'FLAKY':
+            continue
+        test_class, test_name = _parse_log_failure_names(lf)
+        category = lf.get('category', '') or 'LOG_FAILURE'
+        reason = lf.get('reason', '')
+        promoted.append({
+            'arch': lf.get('arch', ''),
+            'test_file': lf.get('test_file', ''),
+            'test_class': test_class,
+            'test_name': test_name,
+            'test_config': lf.get('test_config', ''),
+            'run_time': lf.get('run_time', ''),
+            f'shard_{s1_name}': lf.get('job_shard', ''),
+            f'test_shard_{s1_name}': lf.get(
+                'test_shard', lf.get('shard', '')),
+            f'job_url_{s1_name}': lf.get('job_url', ''),
+            f'status_{s1_name}': 'FAILED',
+            'error_message': f'{category}: {reason}'.strip(': '),
+            'failure_source': 'log',
+        })
+    return promoted
+
+
+def add_promoted_failure_stats(rows, archs, promoted, s1_name):
+    """Include promoted log failures in per-config and overall totals."""
+    if not promoted:
+        return
+
+    from collections import Counter
+    overall = Counter(t.get('arch', '') for t in promoted)
+    by_config = Counter(
+        (t.get('test_config', ''), t.get('arch', '')) for t in promoted)
+    arch_index = {arch: i for i, arch in enumerate(archs)}
+    current_config = ''
+    primary_label = s1_name.upper()
+
+    def increment(values, counts):
+        for arch, count in counts.items():
+            if arch not in arch_index:
+                continue
+            idx = arch_index[arch]
+            try:
+                values[idx] = int(values[idx]) + count
+            except (TypeError, ValueError):
+                values[idx] = count
+
+    for label, values in rows:
+        if label == '__section__':
+            section = str(values)
+            current_config = (
+                section[len('TEST '):].lower()
+                if section.startswith('TEST ') else '')
+            continue
+        if label == primary_label and current_config:
+            increment(values, {
+                arch: by_config[(current_config, arch)] for arch in archs
+            })
+        elif label == f'FAILED({s1_name})':
+            increment(values, overall)
+        elif label == f'TOTAL {primary_label}':
+            increment(values, overall)
 
 
 def write_csv(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_name='set2', has_set2=True, log_failures=None, shard_lookup=None):
@@ -768,6 +850,9 @@ def write_csv(rows, archs, output_path, failed_tests=None, s1_name='set1', s2_na
     shard_lookup = shard_lookup or {}
 
     def _xml_test_shard(t, platform):
+        explicit = t.get(f'test_shard_{platform}', '')
+        if explicit:
+            return _format_test_shards(explicit)
         key = (t.get('arch', ''), platform, t.get('test_config', ''),
                t.get(f'shard_{platform}', ''),
                _norm_test_file(t.get('test_file', '')))
@@ -867,6 +952,9 @@ def write_markdown(rows, archs, output_path, failed_tests=None, s1_name='set1', 
     shard_lookup = shard_lookup or {}
 
     def _xml_test_shard(t, platform):
+        explicit = t.get(f'test_shard_{platform}', '')
+        if explicit:
+            return _format_test_shards(explicit)
         key = (t.get('arch', ''), platform, t.get('test_config', ''),
                t.get(f'shard_{platform}', ''),
                _norm_test_file(t.get('test_file', '')))
@@ -983,12 +1071,19 @@ def main():
         arch_data[arch] = {'rows': rows, 'cols': cols, 'has_set2': has_set2}
 
     data_rows = build_rows(args, archs, arch_data)
-    failed = collect_failed_tests(arch_data, archs, args.set1_name, args.set2_name)
+    xml_failed = collect_failed_tests(
+        arch_data, archs, args.set1_name, args.set2_name)
     any_has_set2 = any(d.get('has_set2', True) for d in arch_data.values())
     log_failures = load_log_failures(args.log_failures) if args.log_failures else []
     if args.log_failures:
         log_failures.extend(load_flaky_tests_as_log_failures(args.log_failures))
     shard_lookup = load_log_shards(args.log_failures) if args.log_failures else {}
+
+    promoted = collect_log_failed_tests(
+        log_failures, xml_failed, args.set1_name)
+    failed = xml_failed + promoted
+    add_promoted_failure_stats(
+        data_rows, archs, promoted, args.set1_name)
 
     _add_cross_arch_info(failed, log_failures, args.set2_name)
     _add_log_failure_cross_arch(log_failures, failed, args.set1_name, args.set2_name)

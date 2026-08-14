@@ -918,13 +918,33 @@ def parse_args():
 
 
 def detect_columns(fieldnames):
-    """Detect whether CSV uses status_rocm/status_cuda or status_set1/status_set2."""
+    """Detect primary/secondary status and primary message columns.
+
+    The parity workflow lets callers label either side (for example
+    ``preview`` instead of ``rocm``), so generated columns are not limited to
+    the historical status_rocm/status_cuda or status_set1/status_set2 pairs.
+    Preserve those well-known pairs, then fall back to the status columns in
+    CSV order, preferring status_cuda as the secondary side when present.
+    """
     if 'status_rocm' in fieldnames:
         return 'status_rocm', 'status_cuda', 'message_rocm'
-    elif 'status_set1' in fieldnames:
+    if 'status_set1' in fieldnames:
         return 'status_set1', 'status_set2', 'message_set1'
-    else:
+
+    status_cols = [name for name in fieldnames if name.startswith('status_')]
+    if len(status_cols) < 2:
         raise ValueError(f"Cannot detect status columns. Available: {fieldnames}")
+
+    if 'status_cuda' in status_cols:
+        secondary = 'status_cuda'
+        primary = next((name for name in status_cols if name != secondary), None)
+    else:
+        primary, secondary = status_cols[:2]
+
+    message = primary.replace('status_', 'message_', 1) if primary else ''
+    if not primary or message not in fieldnames:
+        raise ValueError(f"Cannot detect status/message columns. Available: {fieldnames}")
+    return primary, secondary, message
 
 
 def main():

@@ -286,7 +286,10 @@ jobs:
           fi
 
       - name: Detect log-based failures (timeouts, crashes)
-        if: ${{ inputs.include_logs }}
+        # This is the fallback for failures that kill pytest before it can
+        # finalize JUnit XML. Run it even if an earlier report-enrichment step
+        # fails, otherwise the summary can incorrectly claim zero failures.
+        if: ${{ always() && inputs.include_logs && steps.folder.outputs.folder != '' }}
         working-directory: .automation_scripts/pytorch-unit-test-scripts
         run: |
           FOLDER="${{ steps.folder.outputs.folder }}"
