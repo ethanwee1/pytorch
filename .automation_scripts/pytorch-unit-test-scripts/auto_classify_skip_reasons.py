@@ -46,6 +46,12 @@ RULES = [
     # TIER 1: High-specificity combined rules (message + file/class)
     # ==================================================================
 
+    # --- PT2.0 - Convolution: conv2d backward parametrized skipped on ROCm ---
+    # Must precede the generic Misc "test skipped on ('gfx...')" rule.
+    {"reason": "PT2.0 - Convolution",
+     "msg": r"test skipped on \('gfx",
+     "name": r"(?i)conv2d_backward"},
+
     # --- bfloat16_SDPA_ME: dropout mask in test_transformers with bfloat16 in TEST NAME ---
     # Must be before generic SDPA_ME rule
     {"reason": "bfloat16_SDPA_ME",
@@ -110,6 +116,30 @@ RULES = [
      "file": r"^test_nn$",
      "msg": r"skipIfRocm.*doesn't currently work"},
 
+    # --- Linalg: hipSOLVER version guards and ROCm linalg regressions ---
+    {"reason": "Linalg",
+     "msg": r"hipSOLVER xgeev"},
+    {"reason": "Linalg",
+     "msg": r"regression in ROCm 6\.4"},
+
+    # --- Profiler: CUPTI-dependent profiler tests ---
+    {"reason": "Profiler",
+     "msg": r"(?i)cupti"},
+
+    # --- block_table: ROCm does not support paged-KV block_table ---
+    {"reason": "block_table",
+     "msg": r"ROCm does not support block_table"},
+
+    # --- explicit NVIDIA test: CUDA / SM-gated tests skipped on ROCm ---
+    {"reason": "explicit NVIDIA test",
+     "msg": r"only supported on NVIDIA CUDA"},
+    {"reason": "explicit NVIDIA test",
+     "msg": r"^CUDA-only$"},
+    {"reason": "explicit NVIDIA test",
+     "msg": r"requires CUDA SM80"},
+    {"reason": "explicit NVIDIA test",
+     "msg": r"CUTLASS.*CUDA-only"},
+
     # --- hipSolver/Magma: skipCUDAIfRocm in test_ops for ldl_solve, scaled_dot_product, conv_transpose3d ---
     {"reason": "hipSolver/Magma",
      "msg": r"skipCUDAIfRocm.*doesn't currently work",
@@ -131,6 +161,8 @@ RULES = [
      "msg": r"Skipped for ROCm!"},
     {"reason": "hipSolver/Magma",
      "msg": r"test_cow_input does not work with efficient attention on ROCM"},
+    {"reason": "hipSolver/Magma",
+     "msg": r"hipSOLVER DnXsytrs requires ROCm >= 7\.14"},
 
     # --- Compiler issue: "Skipped!" in test_ops for specific compiler-related tests ---
     {"reason": "Compiler issue",
@@ -390,7 +422,7 @@ RULES = [
 
     # Greater than 4 GPU (distributed)
     {"reason": "Greater than 4 GPU",
-     "msg": r"Need at least 4 CUDA devices"},
+     "msg": r"Need at least 4 (?:CUDA|accelerator) devices"},
     {"reason": "Greater than 4 GPU",
      "msg": r"Test requires.*world size of 4"},
     {"reason": "Greater than 4 GPU",
@@ -428,6 +460,10 @@ RULES = [
     # Misc: Test skipped for ROCm (generic distributed)
     {"reason": "Misc",
      "msg": r"Test skipped for ROCm"},
+
+    # Misc: generic skipIfRocm pointing at a tracked GitHub issue.
+    {"reason": "Misc",
+     "msg": r"skipIfRocm: https?://"},
 
     # Misc: architecture-specific skips
     {"reason": "Misc",
@@ -496,6 +532,26 @@ RULES = [
     # --- inductor.test_loop_ordering ---
     {"reason": "PT2.0 - Inductor",
      "file": r"^inductor\.test_loop_ordering$"},
+
+    # --- inductor.test_triton_kernels (Triton HOP / custom-dialect mutation
+    # analysis tests). AI-analysis flagged these as churning an unrelated
+    # skip-category when new upstream tests land; they belong to Inductor. ---
+    {"reason": "PT2.0 - Inductor",
+     "file": r"^inductor[./]test_triton_kernels$"},
+
+    # --- inductor.test_triton_heuristics (skipUnless(HAS_GPU_AND_TRITON)
+    # guards; GPU/Triton-required inductor tests) ---
+    {"reason": "PT2.0 - Inductor",
+     "file": r"^inductor[./]test_triton_heuristics$"},
+
+    # --- inductor.test_fused_attention (SDPA pattern-rewriter tests) ---
+    {"reason": "PT2.0 - Inductor",
+     "file": r"^inductor[./]test_fused_attention$"},
+
+    # --- dynamo.test_backends (TVM and other dynamo backend tests; e.g. TVM
+    # backend tests enabled/skipped by apache-tvm availability) ---
+    {"reason": "PT2.0 - Dynamo",
+     "file": r"^dynamo[./]test_backends$"},
 
     # --- torch_np / numpy tests ---
     {"reason": "NumPy",
