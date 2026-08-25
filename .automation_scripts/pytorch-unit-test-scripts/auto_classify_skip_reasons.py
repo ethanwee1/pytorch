@@ -422,7 +422,7 @@ RULES = [
 
     # Greater than 4 GPU (distributed)
     {"reason": "Greater than 4 GPU",
-     "msg": r"Need at least 4 CUDA devices"},
+     "msg": r"Need at least 4 (?:CUDA|accelerator) devices"},
     {"reason": "Greater than 4 GPU",
      "msg": r"Test requires.*world size of 4"},
     {"reason": "Greater than 4 GPU",
