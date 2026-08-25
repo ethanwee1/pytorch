@@ -10,6 +10,7 @@ try:
     import re
     import sys
     import yaml
+    from job_name_match import choose_fuzzy_job_prefix
     from upload_stats_lib import unzip
     from upload_test_stats import download_gha_artifacts, download_s3_artifacts
 except ImportError:
@@ -282,30 +283,6 @@ def get_check_runs_for_workflow_runs(sha, run_ids):
                for marker in run_markers)
     ]
 
-_ARCH_PREFIX_TOKENS = {
-    'mi200': ('mi200', 'mi210'),
-    'mi300': ('mi300',),
-    'mi350': ('mi350',),
-    'navi31': ('navi31',),
-    'preview': ('rocm-preview',),
-}
-
-def _is_rocm_job_prefix(prefix):
-    prefix_lower = prefix.lower()
-    return 'rocm' in prefix_lower and 'cuda' not in prefix_lower
-
-def _prefix_matches_arch(arch, prefix, configured_prefix):
-    prefix_lower = prefix.lower()
-    tokens = _ARCH_PREFIX_TOKENS.get(arch, ())
-    if any(token in prefix_lower for token in tokens):
-        return True
-    if prefix == configured_prefix:
-        return True
-    configured_lower = configured_prefix.lower()
-    if not any(token in configured_lower for token in tokens):
-        return _is_rocm_job_prefix(prefix)
-    return False
-
 def get_job_ids_by_prefix(wf, prefix):
     """Get job IDs (as strings) for jobs whose name contains the given prefix."""
     jobs = get_workflow_jobs(wf)
@@ -411,17 +388,6 @@ def derive_shard_count(wf, job_prefix, test_config, fallback):
         print(f"WARNING: could not read shard count from workflow YAML: {error}")
     return fallback
 
-def _candidate_job_prefixes(names, test_config):
-    """Map each distinct '<prefix>' -> count from names shaped like
-    '<prefix> / <kind> (<test_config>, <idx>, <total>, ...)'."""
-    pat = re.compile(r"^(.+?) / \S+ \(" + re.escape(test_config) + r", \d+, \d+")
-    out = {}
-    for name in names:
-        m = pat.match(name)
-        if m:
-            out[m.group(1)] = out.get(m.group(1), 0) + 1
-    return out
-
 def resolve_job_prefix(wf, test_config, configured_prefix, arch=None):
     """Return the '<prefix>' upstream actually uses for this arch's
     <test_config> test jobs, so a drifted configured prefix self-heals instead
@@ -453,26 +419,12 @@ def resolve_job_prefix(wf, test_config, configured_prefix, arch=None):
             ]
         except Exception:
             pass
-    candidates = _candidate_job_prefixes(names, test_config)
-    candidates = {
-        prefix: count for prefix, count in candidates.items()
-        if _is_rocm_job_prefix(prefix)
-        and (arch is None or _prefix_matches_arch(
-            arch, prefix, configured_prefix
-        ))
-    }
-    if not candidates or configured_prefix in candidates:
-        return configured_prefix
-    import difflib
-    best = max(
-        candidates,
-        key=lambda p: (
-            difflib.SequenceMatcher(None, p, configured_prefix).ratio(),
-            candidates[p],
-        ),
+    best = choose_fuzzy_job_prefix(
+        names, test_config, configured_prefix, arch=arch
     )
-    print(f"NOTE: configured job prefix '{configured_prefix}' not found for "
-          f"'{test_config}'; using detected prefix '{best}'")
+    if best != configured_prefix:
+        print(f"NOTE: configured job prefix '{configured_prefix}' not found for "
+              f"'{test_config}'; using detected prefix '{best}'")
     return best
 
 def get_run_by_id(run_id):
