@@ -388,8 +388,8 @@ def derive_shard_count(wf, job_prefix, test_config, fallback):
         print(f"WARNING: could not read shard count from workflow YAML: {error}")
     return fallback
 
-def resolve_job_prefix(wf, test_config, configured_prefix, arch=None):
-    """Return the '<prefix>' upstream actually uses for this arch's
+def resolve_job_prefix(wf, test_config, configured_prefix):
+    """Return the '<prefix>' upstream actually uses for this workflow's
     <test_config> test jobs, so a drifted configured prefix self-heals instead
     of silently matching nothing.
 
@@ -398,10 +398,10 @@ def resolve_job_prefix(wf, test_config, configured_prefix, arch=None):
     'gfx942' -> 'mi350' rename, or py3.10 -> py3.12), which used to require a
     manual config edit each time. Candidates are gathered from the run's jobs
     API and check-runs scoped to that run and its nested reusable workflows.
-    Only ROCm prefixes for the requested architecture are eligible, so another
-    workflow on the same commit cannot be selected accidentally. If the
-    configured prefix is present we keep it unchanged; otherwise we pick the
-    eligible candidate most similar to it. If nothing matches we return the
+    Only ROCm prefixes scoped to this workflow run and its nested reusable runs
+    are eligible, so another workflow on the same commit cannot be selected.
+    If the configured prefix is present we keep it unchanged; otherwise we pick
+    the eligible candidate most similar to it. If nothing matches we return the
     configured value untouched.
     """
     names = []
@@ -420,7 +420,7 @@ def resolve_job_prefix(wf, test_config, configured_prefix, arch=None):
         except Exception:
             pass
     best = choose_fuzzy_job_prefix(
-        names, test_config, configured_prefix, arch=arch
+        names, test_config, configured_prefix
     )
     if best != configured_prefix:
         print(f"NOTE: configured job prefix '{configured_prefix}' not found for "
@@ -1010,7 +1010,7 @@ def main():
         else:
             dist_job_prefix = rocm_job_prefix['distributed']
         dist_job_prefix = resolve_job_prefix(
-            periodic_wf, "distributed", dist_job_prefix, arch=arch
+            periodic_wf, "distributed", dist_job_prefix
         )
 
         folder_list = get_or_create_test_folder(periodic_wf)
@@ -1086,7 +1086,7 @@ def main():
         # If logs aren't found you might want to check the HUD for the correct tags
         # HUD link: https://hud.pytorch.org/hud/pytorch/pytorch/main/1?per_page=50&name_filter=rocm
         rocm_job_prefix['default'] = resolve_job_prefix(
-            rocm_wf, "default", rocm_job_prefix['default'], arch=arch
+            rocm_wf, "default", rocm_job_prefix['default']
         )
         default_shards = derive_shard_count(
             rocm_wf, rocm_job_prefix['default'], "default", rocm_shards["default"]
@@ -1153,7 +1153,7 @@ def main():
             else:
                 inductor_job_prefix = rocm_job_prefix['inductor']
             inductor_job_prefix = resolve_job_prefix(
-                inductor_wf_rocm, "inductor", inductor_job_prefix, arch=arch
+                inductor_wf_rocm, "inductor", inductor_job_prefix
             )
             inductor_shards = derive_shard_count(
                 inductor_wf_rocm, inductor_job_prefix, "inductor",
@@ -1351,8 +1351,7 @@ def main():
                 )
                 print(f"Baseline default workflow '{ROCmWorkflowNames['default']}' id: {baseline_default_wf['id']}")
                 baseline_default_prefix = resolve_job_prefix(
-                    baseline_default_wf, "default", rocm_job_prefix['default'],
-                    arch=arch
+                    baseline_default_wf, "default", rocm_job_prefix['default']
                 )
                 default_shards = derive_shard_count(
                     baseline_default_wf, baseline_default_prefix, "default",
@@ -1391,7 +1390,7 @@ def main():
                 print(f"Baseline distributed workflow '{ROCmWorkflowNames['distributed']}' id: {baseline_dist_wf['id']}")
                 baseline_dist_prefix = resolve_job_prefix(
                     baseline_dist_wf, "distributed",
-                    rocm_job_prefix['distributed'], arch=arch
+                    rocm_job_prefix['distributed']
                 )
                 dist_shards = derive_shard_count(
                     baseline_dist_wf, baseline_dist_prefix, "distributed",
@@ -1430,7 +1429,7 @@ def main():
                 print(f"Baseline inductor workflow '{ROCmWorkflowNames['inductor']}' id: {baseline_inductor_wf['id']}")
                 baseline_inductor_prefix = resolve_job_prefix(
                     baseline_inductor_wf, "inductor",
-                    rocm_job_prefix['inductor'], arch=arch
+                    rocm_job_prefix['inductor']
                 )
                 inductor_shards = derive_shard_count(
                     baseline_inductor_wf, baseline_inductor_prefix, "inductor",

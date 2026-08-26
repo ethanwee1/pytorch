@@ -4,7 +4,7 @@ from job_name_match import choose_fuzzy_job_prefix
 
 
 class JobNameMatchTest(unittest.TestCase):
-    def test_fuzzy_match_selects_renamed_prefix_for_requested_arch(self):
+    def test_fuzzy_match_selects_closest_renamed_prefix(self):
         configured = "linux-jammy-rocm-py3.10-mi300"
         renamed = "linux-noble-rocm-py3.12-mi300"
         names = [
@@ -18,7 +18,7 @@ class JobNameMatchTest(unittest.TestCase):
 
         self.assertEqual(
             choose_fuzzy_job_prefix(
-                names, "default", configured, arch="mi300"
+                names, "default", configured
             ),
             renamed,
         )
@@ -33,21 +33,21 @@ class JobNameMatchTest(unittest.TestCase):
 
         self.assertEqual(
             choose_fuzzy_job_prefix(
-                names, "distributed", configured, arch="mi300"
+                names, "distributed", configured
             ),
             configured,
         )
 
-    def test_preview_does_not_select_non_preview_mi350(self):
-        configured = "linux-noble-rocm-preview-py3.12-mi350"
+    def test_cuda_candidate_is_not_eligible(self):
+        configured = "linux-noble-rocm-py3.12-mi350"
         names = [
-            "linux-noble-rocm-py3.12-mi350 / test "
-            "(inductor, 1, 2, rocm.gpu)",
+            "linux-jammy-cuda13.0-py3.10-gcc11 / test "
+            "(inductor, 1, 2, nvidia.gpu)",
         ]
 
         self.assertEqual(
             choose_fuzzy_job_prefix(
-                names, "inductor", configured, arch="preview"
+                names, "inductor", configured
             ),
             configured,
         )
@@ -61,7 +61,7 @@ class JobNameMatchTest(unittest.TestCase):
 
         self.assertEqual(
             choose_fuzzy_job_prefix(
-                names, "distributed", configured, arch="mi200"
+                names, "distributed", configured
             ),
             configured,
         )
