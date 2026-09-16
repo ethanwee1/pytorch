@@ -242,13 +242,13 @@ def resolve_test_job_family(wf, test_config, platform, configured_prefix,
         jobs, test_config, platform, configured_prefix
     )
     if family is None:
-        return configured_prefix, fallback_shards, jobs
+        return configured_prefix, fallback_shards, "test", jobs
     if family["prefix"] != configured_prefix:
         print(
             f"NOTE: configured {platform} prefix '{configured_prefix}' is absent; "
             f"using '{family['prefix']}' from run {wf['id']}"
         )
-    return family["prefix"], family["total"], jobs
+    return family["prefix"], family["total"], family["kind"], jobs
 
 def get_cuda_inductor_test_jobs(jobs):
     """Return the CUDA inductor test kind and jobs for either main or PR CI layouts."""
@@ -574,59 +574,54 @@ def resolve_full_trunk_run(sha, cuda_job_prefix, status='success', ignore_status
         headers=authentication_headers, params=params,
     )
     trunk_runs = resp.json().get('workflow_runs', [])
-    # Prefer the normal push trunk run over scheduled trunk runs. The scheduled
-    # trunk.yml runs are the periodic rerun_disabled_tests / mem_leak_check
-    # variants: their test jobs share the same names but run in a degenerate
-    # mode and produce near-empty reports. A stable sort keeps the API's
-    # newest-first order within each group, so we pick the newest push run.
-    trunk_runs.sort(key=lambda r: r.get('event') != 'push')
+    # Scheduled trunk.yml runs are periodic rerun_disabled_tests / mem_leak_check
+    # variants. Never let those preempt a normal push for the same SHA.
+    push_runs = [run for run in trunk_runs if run.get("event") == "push"]
+    candidate_runs = push_runs or trunk_runs
 
     trunk_wf = None
     cuda_test_jobs = []
     cuda_test_kind = CUDA_TEST_KINDS[0]
     all_cuda_jobs = []
 
-    for run in trunk_runs:
+    for run in candidate_runs:
         jobs = get_workflow_jobs(run)
         family = choose_test_job_family(
             jobs, "default", "cuda", cuda_job_prefix
         )
-        if family:
+        if family and family["complete"]:
             trunk_wf = run
             all_cuda_jobs = jobs
-            cuda_test_jobs = family["jobs"]
-            cuda_test_kind = family["kind"]
             cuda_job_prefix = family["prefix"]
+            cuda_test_kind, cuda_test_jobs = get_cuda_test_jobs(
+                jobs, cuda_job_prefix
+            )
             print(f"Found CUDA test jobs in trunk run {run['id']}")
             break
 
-    if not cuda_test_jobs and trunk_runs:
-        # CUDA jobs may live in a run the jobs API does not surface (e.g. a
-        # reusable workflow); the check-runs API resolves the actual run.
-        print("No CUDA test jobs in any trunk run's jobs API, trying check-runs API...")
+    if not cuda_test_jobs and candidate_runs:
+        # Check runs can include periodic and other workflows for the same SHA.
+        # Scope the fallback to the candidate trunk runs before choosing a family.
+        print("No CUDA test jobs in trunk jobs APIs, trying scoped check runs...")
         check_runs = get_check_runs_for_commit(sha, "")
-        family = choose_test_job_family(
-            check_runs, "default", "cuda", cuda_job_prefix
-        )
-        if family:
-            cuda_test_kind = family["kind"]
-            cuda_test_jobs = family["jobs"]
-            cuda_job_prefix = family["prefix"]
-            run_match = re.search(r'/runs/(\d+)/', cuda_test_jobs[0].get('details_url', ''))
-            if run_match:
-                actual_run_id = int(run_match.group(1))
-                trunk_wf = next((r for r in trunk_runs if r['id'] == actual_run_id), None)
-                if trunk_wf is None:
-                    resp = requests.get(
-                        f"https://api.github.com/repos/pytorch/pytorch/actions/runs/{actual_run_id}",
-                        headers=authentication_headers,
-                    )
-                    trunk_wf = resp.json()
+        for run in candidate_runs:
+            marker = f"/runs/{run['id']}/"
+            run_checks = [
+                check for check in check_runs
+                if marker in (check.get("details_url") or "")
+            ]
+            family = choose_test_job_family(
+                run_checks, "default", "cuda", cuda_job_prefix
+            )
+            if family and family["complete"]:
+                trunk_wf = run
+                all_cuda_jobs = run_checks
+                cuda_job_prefix = family["prefix"]
+                cuda_test_kind, cuda_test_jobs = get_cuda_test_jobs(
+                    run_checks, cuda_job_prefix
+                )
                 print(f"CUDA test jobs are in trunk run {trunk_wf['id']} (found via check-runs)")
-            all_cuda_jobs = list(cuda_test_jobs)
-
-    if trunk_wf is None and trunk_runs:
-        trunk_wf = trunk_runs[0]
+                break
 
     return (
         trunk_wf,
@@ -772,7 +767,8 @@ def main():
         else:
             dist_job_prefix = rocm_job_prefix['distributed']
 
-        dist_job_prefix, dist_shards, dist_jobs = resolve_test_job_family(
+        dist_job_prefix, dist_shards, dist_job_kind, dist_jobs = \
+            resolve_test_job_family(
             periodic_wf,
             "distributed",
             "rocm",
@@ -790,7 +786,7 @@ def main():
 
         if not args.artifacts_only:
             test_log_list_rocm_distributed = [
-                [f"{current_prefix}rocm_dist{i}.txt", f"{dist_job_prefix} / test (distributed, {i}, {dist_shards}"]
+                [f"{current_prefix}rocm_dist{i}.txt", f"{dist_job_prefix} / {dist_job_kind} (distributed, {i}, {dist_shards}"]
                 for i in range(1, dist_shards + 1)
             ]
             download_logs(
@@ -802,7 +798,7 @@ def main():
 
         # Download artifacts
         test_artifacts_list_rocm_distributed = [
-            f"test-reports-test-distributed-{i}-{dist_shards}"
+            f"test-reports-{dist_job_kind}-distributed-{i}-{dist_shards}"
             for i in range(1, dist_shards + 1)
         ]
         download_artifacts(
@@ -845,13 +841,14 @@ def main():
         default_wf_name = ROCmWorkflowNames['default'] if not default_fallback_used else default_fallbacks[arch][0]
         print(f"Using workflow '{default_wf_name}' with id:{rocm_wf['id']} for ROCm default{' (fallback)' if default_fallback_used else ''}")
 
-        default_prefix, default_shards, default_jobs = resolve_test_job_family(
-            rocm_wf,
-            "default",
-            "rocm",
-            rocm_job_prefix["default"],
-            rocm_shards["default"],
-        )
+        default_prefix, default_shards, default_job_kind, default_jobs = \
+            resolve_test_job_family(
+                rocm_wf,
+                "default",
+                "rocm",
+                rocm_job_prefix["default"],
+                rocm_shards["default"],
+            )
         folder_list = get_or_create_test_folder(rocm_wf)
 
         # Download logs
@@ -861,7 +858,7 @@ def main():
 
         if not args.artifacts_only:
             test_log_list_rocm_default = [
-              [f"{current_prefix}rocm{i}.txt", f"{default_prefix} / test (default, {i}, {default_shards}"]
+              [f"{current_prefix}rocm{i}.txt", f"{default_prefix} / {default_job_kind} (default, {i}, {default_shards}"]
               for i in range(1, default_shards + 1)
             ]
             download_logs(
@@ -873,7 +870,7 @@ def main():
 
         # Download artifacts
         test_artifacts_list_rocm_default = [
-          f"test-reports-test-default-{i}-{default_shards}"
+          f"test-reports-{default_job_kind}-default-{i}-{default_shards}"
           for i in range(1, default_shards + 1)
         ]
         if not args.exclude_default:
@@ -923,7 +920,8 @@ def main():
                 inductor_job_prefix = inductor_fallbacks[arch][1]
             else:
                 inductor_job_prefix = rocm_job_prefix['inductor']
-            inductor_job_prefix, inductor_shards, inductor_jobs = \
+            inductor_job_prefix, inductor_shards, inductor_job_kind, \
+                inductor_jobs = \
                 resolve_test_job_family(
                     inductor_wf_rocm,
                     "inductor",
@@ -936,7 +934,7 @@ def main():
             # Download logs
             if not args.artifacts_only:
               test_log_list_rocm_inductor = [
-                [f"{current_prefix}rocm_inductor{i}.txt", f"{inductor_job_prefix} / test (inductor, {i}, {inductor_shards}"]
+                [f"{current_prefix}rocm_inductor{i}.txt", f"{inductor_job_prefix} / {inductor_job_kind} (inductor, {i}, {inductor_shards}"]
                 for i in range(1, inductor_shards + 1)
               ]
               download_logs(
@@ -948,7 +946,7 @@ def main():
 
             #Download artifacts
             test_artifacts_list_rocm_inductor = [
-              f"test-reports-test-inductor-{i}-{inductor_shards}"
+              f"test-reports-{inductor_job_kind}-inductor-{i}-{inductor_shards}"
               for i in range(1, inductor_shards + 1)
             ]
             download_artifacts(
@@ -1003,9 +1001,17 @@ def main():
             cuda_default_family["total"]
             if cuda_default_family else cuda_shards["default"]
         )
+        cuda_default_kind = (
+            cuda_default_family["kind"]
+            if cuda_default_family else cuda_test_job_kind
+        )
         cuda_dist_shards = (
             cuda_dist_family["total"]
             if cuda_dist_family else cuda_shards["distributed"]
+        )
+        cuda_dist_kind = (
+            cuda_dist_family["kind"]
+            if cuda_dist_family else cuda_test_job_kind
         )
         print(
             f"Using final CUDA shard counts: default={cuda_default_shards}, "
@@ -1015,12 +1021,12 @@ def main():
         # Download logs
         if not args.artifacts_only:
             test_log_list_cuda = [
-                [f"cuda{i}.txt", f"{cuda_job_prefix} / {cuda_test_job_kind} (default, {i}, {cuda_default_shards}"]
+                [f"cuda{i}.txt", f"{cuda_job_prefix} / {cuda_default_kind} (default, {i}, {cuda_default_shards}"]
                 for i in range(1, cuda_default_shards + 1)
             ]
             if not args.exclude_distributed:
                 test_log_list_cuda += [
-                    [f"cuda_dist{i}.txt", f"{cuda_job_prefix} / {cuda_test_job_kind} (distributed, {i}, {cuda_dist_shards}"]
+                    [f"cuda_dist{i}.txt", f"{cuda_job_prefix} / {cuda_dist_kind} (distributed, {i}, {cuda_dist_shards}"]
                     for i in range(1, cuda_dist_shards + 1)
                 ]
 
@@ -1030,13 +1036,13 @@ def main():
         test_artifacts_list_cuda = []
         if not args.exclude_default:
             test_artifacts_list_cuda += [
-                f"test-reports-{cuda_test_job_kind}-default-{i}-{cuda_default_shards}"
+                f"test-reports-{cuda_default_kind}-default-{i}-{cuda_default_shards}"
                 for i in range(1, cuda_default_shards + 1)
             ]
 
         if not args.exclude_distributed:
             test_artifacts_list_cuda += [
-                f"test-reports-{cuda_test_job_kind}-distributed-{i}-{cuda_dist_shards}"
+                f"test-reports-{cuda_dist_kind}-distributed-{i}-{cuda_dist_shards}"
                 for i in range(1, cuda_dist_shards + 1)
             ]
 
@@ -1127,30 +1133,74 @@ def main():
                 args.ignore_status,
             )
 
+        def resolve_baseline_source(test_config):
+            workflow = ROCmWorkflowNames[test_config]
+            job_prefix = rocm_job_prefix[test_config]
+            if workflow == "trunk" and baseline_trunk_wf:
+                return baseline_trunk_wf, workflow, job_prefix
+            try:
+                workflow_run = download_workflow_run(
+                    created=args.created,
+                    max_pages=args.max_pages,
+                    workflow=workflow,
+                    sha=baseline_sha,
+                    ignore_status=args.ignore_status,
+                    status=status,
+                    error_msg=(
+                        f"Baseline {test_config} workflow not found for "
+                        f"{baseline_sha}"
+                    ),
+                )
+            except (IndexError, Exception):
+                workflow_run = None
+
+            fallbacks = _fallbacks_for(test_config)
+            if workflow_run is None and arch in fallbacks:
+                workflow, job_prefix = fallbacks[arch]
+                print(
+                    f"Baseline {test_config} not found in "
+                    f"{ROCmWorkflowNames[test_config]}, falling back to {workflow}"
+                )
+                if workflow == "trunk" and baseline_trunk_wf:
+                    workflow_run = baseline_trunk_wf
+                else:
+                    workflow_run = download_workflow_run(
+                        created=args.created,
+                        max_pages=args.max_pages,
+                        workflow=workflow,
+                        sha=baseline_sha,
+                        ignore_status=args.ignore_status,
+                        status=status,
+                        error_msg=(
+                            f"Baseline {test_config} fallback not found for "
+                            f"{baseline_sha}"
+                        ),
+                    )
+            if workflow_run is None:
+                raise Exception(
+                    f"Baseline {test_config} workflow not found for {baseline_sha}"
+                )
+            return workflow_run, workflow, job_prefix
+
         if not args.exclude_default:
             try:
-                if ROCmWorkflowNames["default"] == "trunk" and baseline_trunk_wf:
-                    baseline_default_wf = baseline_trunk_wf
-                else:
-                    baseline_default_wf = download_workflow_run(
-                        created=args.created, max_pages=args.max_pages,
-                        workflow=ROCmWorkflowNames["default"], sha=baseline_sha,
-                        ignore_status=args.ignore_status, status=status,
-                        error_msg=f"Baseline default workflow not found for {baseline_sha}",
-                    )
-                print(f"Baseline default workflow '{ROCmWorkflowNames['default']}' id: {baseline_default_wf['id']}")
-                baseline_default_prefix, default_shards, baseline_default_jobs = \
-                    resolve_test_job_family(
+                baseline_default_wf, baseline_default_workflow, \
+                    baseline_default_configured_prefix = \
+                        resolve_baseline_source("default")
+                print(f"Baseline default workflow '{baseline_default_workflow}' id: {baseline_default_wf['id']}")
+                baseline_default_prefix, default_shards, \
+                    baseline_default_kind, baseline_default_jobs = \
+                        resolve_test_job_family(
                         baseline_default_wf,
                         "default",
                         "rocm",
-                        rocm_job_prefix["default"],
+                        baseline_default_configured_prefix,
                         rocm_shards["default"],
                     )
 
                 if not args.artifacts_only:
                     baseline_default_logs = [
-                        [f"{baseline_prefix}rocm{i}.txt", f"{baseline_default_prefix} / test (default, {i}, {default_shards}"]
+                        [f"{baseline_prefix}rocm{i}.txt", f"{baseline_default_prefix} / {baseline_default_kind} (default, {i}, {default_shards}"]
                         for i in range(1, default_shards + 1)
                     ]
                     download_logs(
@@ -1161,7 +1211,7 @@ def main():
                     )
 
                 baseline_default_prefixes = [
-                    f"test-reports-test-default-{i}-{default_shards}"
+                    f"test-reports-{baseline_default_kind}-default-{i}-{default_shards}"
                     for i in range(1, default_shards + 1)
                 ]
                 download_artifacts(
@@ -1176,28 +1226,22 @@ def main():
 
         if not args.exclude_distributed and "distributed" in ROCmWorkflowNames:
             try:
-                if ROCmWorkflowNames["distributed"] == "trunk" and baseline_trunk_wf:
-                    baseline_dist_wf = baseline_trunk_wf
-                else:
-                    baseline_dist_wf = download_workflow_run(
-                        created=args.created, max_pages=args.max_pages,
-                        workflow=ROCmWorkflowNames["distributed"], sha=baseline_sha,
-                        ignore_status=args.ignore_status, status=status,
-                        error_msg=f"Baseline distributed workflow not found for {baseline_sha}",
-                    )
-                print(f"Baseline distributed workflow '{ROCmWorkflowNames['distributed']}' id: {baseline_dist_wf['id']}")
-                baseline_dist_prefix, dist_shards, baseline_dist_jobs = \
-                    resolve_test_job_family(
+                baseline_dist_wf, baseline_dist_workflow, \
+                    baseline_dist_configured_prefix = \
+                        resolve_baseline_source("distributed")
+                print(f"Baseline distributed workflow '{baseline_dist_workflow}' id: {baseline_dist_wf['id']}")
+                baseline_dist_prefix, dist_shards, baseline_dist_kind, \
+                    baseline_dist_jobs = resolve_test_job_family(
                         baseline_dist_wf,
                         "distributed",
                         "rocm",
-                        rocm_job_prefix["distributed"],
+                        baseline_dist_configured_prefix,
                         rocm_shards["distributed"],
                     )
 
                 if not args.artifacts_only:
                     baseline_dist_logs = [
-                        [f"{baseline_prefix}rocm_dist{i}.txt", f"{baseline_dist_prefix} / test (distributed, {i}, {dist_shards}"]
+                        [f"{baseline_prefix}rocm_dist{i}.txt", f"{baseline_dist_prefix} / {baseline_dist_kind} (distributed, {i}, {dist_shards}"]
                         for i in range(1, dist_shards + 1)
                     ]
                     download_logs(
@@ -1208,7 +1252,7 @@ def main():
                     )
 
                 baseline_dist_prefixes = [
-                    f"test-reports-test-distributed-{i}-{dist_shards}"
+                    f"test-reports-{baseline_dist_kind}-distributed-{i}-{dist_shards}"
                     for i in range(1, dist_shards + 1)
                 ]
                 download_artifacts(
@@ -1223,28 +1267,23 @@ def main():
 
         if not args.exclude_inductor and "inductor" in ROCmWorkflowNames:
             try:
-                if ROCmWorkflowNames["inductor"] == "trunk" and baseline_trunk_wf:
-                    baseline_inductor_wf = baseline_trunk_wf
-                else:
-                    baseline_inductor_wf = download_workflow_run(
-                        created=args.created, max_pages=args.max_pages,
-                        workflow=ROCmWorkflowNames["inductor"], sha=baseline_sha,
-                        ignore_status=args.ignore_status, status=status,
-                        error_msg=f"Baseline inductor workflow not found for {baseline_sha}",
-                    )
-                print(f"Baseline inductor workflow '{ROCmWorkflowNames['inductor']}' id: {baseline_inductor_wf['id']}")
-                baseline_inductor_prefix, inductor_shards, baseline_inductor_jobs = \
-                    resolve_test_job_family(
+                baseline_inductor_wf, baseline_inductor_workflow, \
+                    baseline_inductor_configured_prefix = \
+                        resolve_baseline_source("inductor")
+                print(f"Baseline inductor workflow '{baseline_inductor_workflow}' id: {baseline_inductor_wf['id']}")
+                baseline_inductor_prefix, inductor_shards, \
+                    baseline_inductor_kind, baseline_inductor_jobs = \
+                        resolve_test_job_family(
                         baseline_inductor_wf,
                         "inductor",
                         "rocm",
-                        rocm_job_prefix["inductor"],
+                        baseline_inductor_configured_prefix,
                         rocm_shards["inductor"],
                     )
 
                 if not args.artifacts_only:
                     baseline_inductor_logs = [
-                        [f"{baseline_prefix}rocm_inductor{i}.txt", f"{baseline_inductor_prefix} / test (inductor, {i}, {inductor_shards}"]
+                        [f"{baseline_prefix}rocm_inductor{i}.txt", f"{baseline_inductor_prefix} / {baseline_inductor_kind} (inductor, {i}, {inductor_shards}"]
                         for i in range(1, inductor_shards + 1)
                     ]
                     download_logs(
@@ -1255,7 +1294,7 @@ def main():
                     )
 
                 baseline_inductor_prefixes = [
-                    f"test-reports-test-inductor-{i}-{inductor_shards}"
+                    f"test-reports-{baseline_inductor_kind}-inductor-{i}-{inductor_shards}"
                     for i in range(1, inductor_shards + 1)
                 ]
                 download_artifacts(

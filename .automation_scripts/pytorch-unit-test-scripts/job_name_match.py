@@ -40,19 +40,25 @@ def choose_test_job_family(jobs, test_config, platform, configured_prefix):
             int(_TEST_JOB.match(job["name"]).group("shard"))
             for job in matching_jobs
         }
+        complete = shards == set(range(1, total + 1))
         normalized = prefix.lower()
         return (
-            prefix == configured_prefix,
             not any(marker in normalized for marker in _SPECIAL_FAMILIES),
-            len(shards) == total,
+            complete,
+            prefix == configured_prefix,
             difflib.SequenceMatcher(None, prefix, configured_prefix).ratio(),
             len(shards),
         )
 
     (prefix, kind, total), matching_jobs = max(families.items(), key=score)
+    shards = {
+        int(_TEST_JOB.match(job["name"]).group("shard"))
+        for job in matching_jobs
+    }
     return {
         "prefix": prefix,
         "kind": kind,
         "total": total,
         "jobs": matching_jobs,
+        "complete": shards == set(range(1, total + 1)),
     }
