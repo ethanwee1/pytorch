@@ -8,11 +8,12 @@ import re
 import sys
 
 
-TEST_CONFIGS = ['default', 'distributed', 'inductor']
+TEST_CONFIGS = ['default', 'distributed', 'inductor', 'slow']
 TEST_CONFIG_DISPLAY = {
     'default': 'TEST DEFAULT',
     'distributed': 'TEST DISTRIBUTED',
     'inductor': 'TEST INDUCTOR',
+    'slow': 'TEST SLOW',
 }
 MAX_DIAGNOSTIC_FIELD_CHARS = 20_000
 DIAGNOSTIC_FIELDS = {
@@ -663,7 +664,7 @@ def build_rows(args, archs, arch_data):
             f'https://hud.pytorch.org/hud/pytorch/pytorch/{args.sha}/1'
             '?per_page=50'
             '&name_filter=%28trunk.*cuda%7Cinductor%7Crocm%29.*test.*'
-            '%28default%7Cdistributed%7Cinductor%29%2C'
+            '%28default%7Cdistributed%7Cinductor%7Cslow%29%2C'
             '&useRegexFilter=true'
         )
         out.append(('__header__', f'HUD: [parity jobs for this commit]({hud_url})'))

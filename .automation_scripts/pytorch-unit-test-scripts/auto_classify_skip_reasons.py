@@ -35,7 +35,7 @@ from collections import Counter, defaultdict
 #   file:     (optional) regex to match against test_file
 #   cls:      (optional) regex to match against test_class
 #   name:     (optional) regex to match against test_name
-#   workflow: (optional) one of "default", "distributed", "inductor"
+#   workflow: (optional) one of "default", "distributed", "inductor", "slow"
 #
 # All provided fields must match (AND logic). Omitted fields match anything.
 # msg="" matches empty messages; omitting msg matches anything.

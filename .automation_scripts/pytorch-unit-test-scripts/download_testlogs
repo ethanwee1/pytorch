@@ -73,7 +73,7 @@ def _is_variant_job(name):
     return any(m in (name or "") for m in VARIANT_JOB_MARKERS)
 
 # Test configs whose sources are listed in the per-arch config (in order).
-_TEST_CONFIGS = ("default", "distributed", "inductor")
+_TEST_CONFIGS = ("default", "distributed", "inductor", "slow")
 
 
 def parity_config_views(cfg):
@@ -437,11 +437,16 @@ CUDA_TEST_KINDS = tuple(PARITY_CONFIG["cuda"]["test_kinds"])
 
 def get_cuda_test_jobs(jobs, cuda_job_prefix):
     """Return the CUDA test kind and jobs for either main or PR CI layouts."""
+    return get_test_jobs_for_config(jobs, cuda_job_prefix, "default")
+
+
+def get_test_jobs_for_config(jobs, job_prefix, test_config):
+    """Return the test kind and jobs for one configured test family."""
     for test_kind in CUDA_TEST_KINDS:
         test_jobs = [
             j for j in jobs
-            if matches_job_prefix(j['name'], cuda_job_prefix)
-            and f"/ {test_kind} (" in j['name']
+            if matches_job_prefix(j['name'], job_prefix)
+            and f"/ {test_kind} ({test_config}," in j['name']
         ]
         if test_jobs:
             return test_kind, test_jobs
@@ -550,7 +555,7 @@ def _shorten_unzipped_dirs():
     for d in sorted(Path(".").glob("unzipped-*")):
         if not d.is_dir():
             continue
-        m = re.search(r'test-(?:osdc-)?(default|distributed|inductor)-(\d+)-(\d+)', d.name)
+        m = re.search(r'test-(?:osdc-)?(default|distributed|inductor|slow)-(\d+)-(\d+)', d.name)
         if m:
             short_name = f"test-{m.group(1)}-{m.group(2)}-{m.group(3)}"
             # The artifact/dir name ends with "_<jobid>" (optionally ".zip")
@@ -776,6 +781,7 @@ def parse_args():
     parser.add_argument('--exclude_distributed', action='store_true')
     parser.add_argument('--exclude_inductor', action='store_true')
     parser.add_argument('--exclude_default', action='store_true')
+    parser.add_argument('--exclude_slow', action='store_true')
     parser.add_argument('--ignore_status', action='store_true')
     parser.add_argument('--artifacts_only', action='store_true')
     parser.add_argument('--no_rocm', action='store_true')
@@ -895,6 +901,9 @@ def main():
         if not args.exclude_inductor:
             print(f"NOTE: {arch} has no inductor workflow, auto-excluding inductor")
             args.exclude_inductor = True
+    if "slow" not in arch_config and not args.exclude_slow:
+        print(f"NOTE: {arch} has no slow workflow, auto-excluding slow")
+        args.exclude_slow = True
     if args.baseline_sha and not args.no_cuda:
         print("NOTE: baseline_sha provided, auto-skipping CUDA (commit-vs-commit comparison)")
         args.no_cuda = True
@@ -1185,6 +1194,68 @@ def main():
             )
             os.chdir("..")
 
+    # Slow parity is intentionally opt-in by architecture: only an arch with a
+    # configured ROCm slow source also downloads the matching CUDA slow source.
+    if not args.no_rocm and not args.exclude_slow:
+        slow_sha = sha
+        print("===========================================")
+        print(f"Finding ROCm slow tests in workflow '{ROCmWorkflowNames['slow']}' by sha: {slow_sha}")
+        print("===========================================")
+        try:
+            slow_wf_rocm = download_workflow_run(
+                created=args.created,
+                max_pages=args.max_pages,
+                workflow=ROCmWorkflowNames["slow"],
+                sha=slow_sha,
+                ignore_status=args.ignore_status,
+                status=status,
+                error_msg="Error: slow workflow not found in scanned workflow runs.",
+            )
+        except (IndexError, Exception):
+            slow_wf_rocm = None
+
+        if slow_wf_rocm is None:
+            _skip_missing_config("slow", slow_sha, ROCmWorkflowNames["slow"])
+        else:
+            slow_job_prefix = resolve_job_prefix(
+                slow_wf_rocm, "slow", rocm_job_prefix["slow"]
+            )
+            slow_shards = derive_shard_count(
+                slow_wf_rocm, slow_job_prefix, "slow", rocm_shards["slow"]
+            )
+            print(f"Using final ROCm shard count {slow_shards} for slow")
+            folder_list = get_or_create_test_folder(slow_wf_rocm)
+
+            if not args.artifacts_only:
+                slow_jobs = get_workflow_jobs(slow_wf_rocm)
+                slow_test_kind, _ = get_test_jobs_for_config(
+                    slow_jobs, slow_job_prefix, "slow"
+                )
+                slow_logs = [
+                    [f"{current_prefix}rocm_slow{i}.txt",
+                     f"{slow_job_prefix} / {slow_test_kind} (slow, {i}, {slow_shards}"]
+                    for i in range(1, slow_shards + 1)
+                ]
+                download_logs(
+                    slow_wf_rocm, slow_logs, folder_list[0], jobs=slow_jobs
+                )
+
+            slow_prefixes = [
+                f"test-reports-test-slow-{i}-{slow_shards}"
+                for i in range(1, slow_shards + 1)
+            ]
+            slow_dl_wf, slow_dl_subs = resolve_artifact_download(
+                slow_wf_rocm, slow_job_prefix, "slow",
+                rocm_artifact_substrings,
+            )
+            download_artifacts(
+                slow_dl_wf,
+                slow_prefixes,
+                test_folder=folder_list[2],
+                allowed_substrings=slow_dl_subs,
+            )
+            os.chdir("..")
+
     if not args.no_cuda:
         cuda_config = PARITY_CONFIG["cuda"]
         cuda_job_prefix = CUDA_JOB_PREFIXES["default"]
@@ -1339,6 +1410,80 @@ def main():
                 )
                 os.chdir("..")
 
+        if not args.exclude_slow:
+            slow_cuda_prefix = CUDA_JOB_PREFIXES["slow"]
+            print("==========================================")
+            print(f"Finding CUDA slow tests in workflow '{CUDAWorkflowNames['slow']}' by sha: {sha}")
+            print("==========================================")
+            try:
+                slow_wf_cuda = download_workflow_run(
+                    created=args.created,
+                    max_pages=args.max_pages,
+                    workflow=CUDAWorkflowNames["slow"],
+                    sha=sha,
+                    ignore_status=args.ignore_status,
+                    status=status,
+                    error_msg="Error: CUDA slow workflow not found for this SHA.",
+                )
+            except (IndexError, Exception):
+                slow_wf_cuda = None
+
+            if slow_wf_cuda is None:
+                _skip_missing_config(
+                    "slow (CUDA baseline)", sha, CUDAWorkflowNames["slow"]
+                )
+            else:
+                slow_cuda_prefix = resolve_job_prefix(
+                    slow_wf_cuda, "slow", slow_cuda_prefix
+                )
+                slow_cuda_shards = derive_shard_count(
+                    slow_wf_cuda, slow_cuda_prefix, "slow",
+                    cuda_shards["slow"],
+                )
+                print(f"Using final CUDA slow shard count {slow_cuda_shards}")
+                slow_cuda_jobs = get_workflow_jobs(slow_wf_cuda)
+                slow_cuda_kind, current_slow_jobs = get_test_jobs_for_config(
+                    slow_cuda_jobs, slow_cuda_prefix, "slow"
+                )
+                all_attempt_slow_jobs = get_workflow_jobs(
+                    slow_wf_cuda, all_attempts=True
+                )
+                _, carried_slow_jobs = get_test_jobs_for_config(
+                    all_attempt_slow_jobs, slow_cuda_prefix, "slow"
+                )
+                slow_cuda_job_ids = sorted({
+                    str(j["id"])
+                    for j in current_slow_jobs + carried_slow_jobs
+                })
+                slow_cuda_substrings = (
+                    [f"_{jid}" for jid in slow_cuda_job_ids]
+                    if slow_cuda_job_ids else ["nvidia.gpu"]
+                )
+                folder_list = get_or_create_test_folder(slow_wf_cuda)
+
+                if not args.artifacts_only:
+                    slow_cuda_logs = [
+                        [f"cuda_slow{i}.txt",
+                         f"{slow_cuda_prefix} / {slow_cuda_kind} (slow, {i}, {slow_cuda_shards}"]
+                        for i in range(1, slow_cuda_shards + 1)
+                    ]
+                    download_logs(
+                        slow_wf_cuda, slow_cuda_logs, folder_list[0],
+                        jobs=slow_cuda_jobs,
+                    )
+
+                slow_cuda_prefixes = [
+                    f"test-reports-test-slow-{i}-{slow_cuda_shards}"
+                    for i in range(1, slow_cuda_shards + 1)
+                ]
+                download_artifacts(
+                    slow_wf_cuda,
+                    slow_cuda_prefixes,
+                    test_folder=folder_list[1],
+                    allowed_substrings=slow_cuda_substrings,
+                )
+                os.chdir("..")
+
     # Download baseline commit artifacts for commit-vs-commit comparison
     if args.baseline_sha and not args.no_rocm:
         baseline_sha = args.baseline_sha
@@ -1454,6 +1599,49 @@ def main():
                 os.chdir("..")
             except Exception as e:
                 print(f"WARNING: Could not download baseline inductor artifacts: {e}")
+
+        if not args.exclude_slow and "slow" in ROCmWorkflowNames:
+            try:
+                baseline_slow_wf = download_workflow_run(
+                    created=args.created, max_pages=args.max_pages,
+                    workflow=ROCmWorkflowNames["slow"], sha=baseline_sha,
+                    ignore_status=args.ignore_status, status=status,
+                    error_msg=f"Baseline slow workflow not found for {baseline_sha}",
+                )
+                baseline_slow_prefix = resolve_job_prefix(
+                    baseline_slow_wf, "slow", rocm_job_prefix["slow"]
+                )
+                baseline_slow_shards = derive_shard_count(
+                    baseline_slow_wf, baseline_slow_prefix, "slow",
+                    rocm_shards["slow"],
+                )
+                if not args.artifacts_only:
+                    baseline_slow_jobs = get_workflow_jobs(baseline_slow_wf)
+                    baseline_slow_kind, _ = get_test_jobs_for_config(
+                        baseline_slow_jobs, baseline_slow_prefix, "slow"
+                    )
+                    baseline_slow_logs = [
+                        [f"{baseline_prefix}rocm_slow{i}.txt",
+                         f"{baseline_slow_prefix} / {baseline_slow_kind} (slow, {i}, {baseline_slow_shards}"]
+                        for i in range(1, baseline_slow_shards + 1)
+                    ]
+                    download_logs(
+                        baseline_slow_wf, baseline_slow_logs, test_folder,
+                        jobs=baseline_slow_jobs,
+                    )
+                baseline_slow_prefixes = [
+                    f"test-reports-test-slow-{i}-{baseline_slow_shards}"
+                    for i in range(1, baseline_slow_shards + 1)
+                ]
+                download_artifacts(
+                    baseline_slow_wf,
+                    baseline_slow_prefixes,
+                    test_folder=baseline_xml_dir,
+                    allowed_substrings=rocm_artifact_substrings,
+                )
+                os.chdir("..")
+            except Exception as e:
+                print(f"WARNING: Could not download baseline slow artifacts: {e}")
 
         print(f"Baseline artifacts saved to: {baseline_xml_dir}")
 
