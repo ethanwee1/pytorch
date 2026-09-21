@@ -106,13 +106,22 @@ class SlowParityProducerTest(unittest.TestCase):
         args = argparse.Namespace(
             sha="", pr_id="", set1_name="rocm", set2_name="cuda"
         )
-        rows = [{
-            "test_config": "slow",
-            "status_rocm": "SKIPPED",
-            "status_cuda": "PASSED",
-            "running_time_rocm": "1.0",
-            "running_time_cuda": "2.0",
-        }]
+        rows = [
+            {
+                "test_config": "slow",
+                "status_rocm": "SKIPPED",
+                "status_cuda": "PASSED",
+                "running_time_rocm": "1.0",
+                "running_time_cuda": "2.0",
+            },
+            {
+                "test_config": "slow",
+                "status_rocm": "SKIPPED",
+                "status_cuda": "SKIPPED",
+                "running_time_rocm": "0.0",
+                "running_time_cuda": "0.0",
+            },
+        ]
         arch_data = {
             "mi350": {
                 "rows": rows,
@@ -131,6 +140,14 @@ class SlowParityProducerTest(unittest.TestCase):
             values for label, values in summary if label == "Overall DISAGREE%"
         )
         self.assertEqual(overall_disagree, ["100.00%"])
+        total_cuda = next(
+            values for label, values in summary if label == "TOTAL CUDA"
+        )
+        total_rocm = next(
+            values for label, values in summary if label == "TOTAL ROCM"
+        )
+        self.assertEqual(total_cuda, [1])
+        self.assertEqual(total_rocm, [1])
 
     def test_workflows_forward_and_arch_scope_slow(self):
         repo_root = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))

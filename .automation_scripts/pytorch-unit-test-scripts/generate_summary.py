@@ -128,9 +128,20 @@ def test_config_stats_keys(s1_name, s2_name, has_set2=True):
     ]
 
 
+def parity_metric_rows(rows, s2_col, has_set2=True):
+    """Exclude Slow rows CUDA did not pass from parity metrics."""
+    if not has_set2:
+        return rows
+    return [
+        row for row in rows
+        if row.get('test_config') != 'slow' or row.get(s2_col) == 'PASSED'
+    ]
+
+
 def compute_test_config_stats(rows, s1_col, s2_col, s1_name, s2_name, has_set2=True):
     s1 = s1_name.upper()
     s2 = s2_name.upper()
+    rows = parity_metric_rows(rows, s2_col, has_set2)
 
     if not has_set2:
         vals = {}
@@ -212,6 +223,7 @@ def overall_stats_keys(s1_name, s2_name, has_set2=True):
 def compute_overall_stats(rows, s1_col, s2_col, s1_time_col, s2_time_col, s1_name, s2_name, has_set2=True):
     s1 = s1_name.upper()
     s2 = s2_name.upper()
+    rows = parity_metric_rows(rows, s2_col, has_set2)
 
     def safe_float(v):
         try:
