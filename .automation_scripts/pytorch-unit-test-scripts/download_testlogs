@@ -383,6 +383,7 @@ def download_xml_files(workflow_run_id, workflow_run_attempts, prefixes=[], allo
     # (highest) attempt that has it, mirroring the GHA fallback's
     # "prefer highest attempt per shard" behaviour.
     artifact_paths = []
+    missing_prefixes = []
     try:
         max_attempt = int(workflow_run_attempts)
     except (TypeError, ValueError):
@@ -390,17 +391,29 @@ def download_xml_files(workflow_run_id, workflow_run_attempts, prefixes=[], allo
     if max_attempt < 1:
         max_attempt = 1
     for prefix in prefixes:
+        prefix_paths = []
         for attempt in range(max_attempt, 0, -1):
             print("Trying to download S3 artifacts for workflow_run_attempt {} with prefix {}".format(attempt, prefix))
-            found = download_s3_artifacts(
-                prefix,
-                workflow_run_id,
-                attempt,
-                allowed_substrings=allowed_substrings,
-            )
-            if found:
-                artifact_paths += found
+            try:
+                found = download_s3_artifacts(
+                    prefix,
+                    workflow_run_id,
+                    attempt,
+                    allowed_substrings=allowed_substrings,
+                )
+            except Exception as error:
+                print(
+                    f"WARNING: S3 artifact lookup failed for {prefix}: {error}; "
+                    "trying GitHub Actions artifacts"
+                )
                 break
+            if found:
+                prefix_paths += found
+                break
+        if prefix_paths:
+            artifact_paths += prefix_paths
+        else:
+            missing_prefixes.append(prefix)
 
     # Filter out rerun_disabled_tests artifacts (same prefix, different job)
     before = len(artifact_paths)
@@ -408,13 +421,14 @@ def download_xml_files(workflow_run_id, workflow_run_attempts, prefixes=[], allo
     if before != len(artifact_paths):
         print(f"  Filtered out {before - len(artifact_paths)} rerun_disabled artifacts")
 
-    # Fall back to GHA artifacts if S3 returned nothing
-    if len(artifact_paths) == 0:
-        print(f"No S3 artifacts found, trying GHA artifacts as fallback...")
-        artifact_paths = download_gha_artifacts_filtered(
+    # Fill every S3 miss from GitHub Actions artifacts. This also handles
+    # unavailable or expired AWS credentials on forks.
+    if missing_prefixes:
+        print(f"Trying GHA artifacts for missing prefixes: {missing_prefixes}")
+        artifact_paths += download_gha_artifacts_filtered(
             workflow_run_id,
             workflow_run_attempts,
-            prefixes=prefixes,
+            prefixes=missing_prefixes,
             allowed_substrings=allowed_substrings,
         )
 
