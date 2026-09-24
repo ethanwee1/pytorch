@@ -417,6 +417,11 @@ def resolve_artifact_download(wf, job_prefix, test_config, default_substrings):
     runs = {}
     jobs_by_run = {}
     for cr in check_runs:
+        # Variant shards carry the same name and are duplicated across the push
+        # run and the scheduled variant re-run, so counting them can tie and
+        # redirect the download to the variant run's artifacts.
+        if _is_variant_job(cr.get("name", "")):
+            continue
         if not pat.search(cr.get("name", "")):
             continue
         m = re.search(r"/runs/(\d+)/job/(\d+)", cr.get("details_url", "") or "")
