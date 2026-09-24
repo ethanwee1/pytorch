@@ -11,13 +11,13 @@
     "workflow_regex": "parity-auto derives the per-arch upstream-workflow-path regex from the union of the workflow values across this arch's configs, so it is not stored here."
   },
   "cuda": {
-    "default": [{ "workflow": "trunk", "job_prefix": "linux-jammy-cuda13.0-py3.10-gcc11" }],
-    "distributed": [{ "workflow": "trunk", "job_prefix": "linux-jammy-cuda13.0-py3.10-gcc11" }],
+    "default": [{ "workflow": "trunk", "job_prefix": "linux-jammy-cuda13.2-py3.11-gcc11" }],
+    "distributed": [{ "workflow": "trunk", "job_prefix": "linux-jammy-cuda13.2-py3.11-gcc11" }],
     "inductor": [{ "workflow": "inductor", "job_prefix": "unit-test / inductor-test" }],
     "slow": [{ "workflow": "slow", "job_prefix": "linux-jammy-cuda13.0-py3.10-gcc11-sm86" }],
     "test_kinds": ["test-osdc", "test"],
-    "shard_counts": { "default": 5, "distributed": 3, "inductor": 2, "slow": 3 },
-    "checkrun_regex": "(linux-jammy-cuda13[.]0-py3[.]10-gcc11 / (test-osdc|test) [(](default|distributed),|unit-test / inductor-test / (test-osdc|test) [(]inductor,)"
+    "shard_counts": { "default": 14, "distributed": 10, "inductor": 2, "slow": 3 },
+    "checkrun_regex": "(linux-jammy-cuda13[.]2-py3[.]11-gcc11 / (test-osdc|test) [(](default|distributed),|unit-test / inductor-test / (test-osdc|test) [(]inductor,)"
   },
   "rocm": {
     "mi350": {
