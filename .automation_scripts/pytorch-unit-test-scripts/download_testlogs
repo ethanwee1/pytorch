@@ -840,6 +840,27 @@ def resolve_full_trunk_run(sha, cuda_job_prefix, status='success', ignore_status
             print(f"Found CUDA test jobs in trunk run {run['id']}")
             break
 
+    if not cuda_test_jobs:
+        # The configured name matched nothing, so it is probably stale after an
+        # upstream rename. The ROCm prefixes already get this recovery; apply it
+        # to CUDA too, keeping only CUDA candidates so a ROCm prefix can never win.
+        for run in trunk_runs:
+            detected = resolve_job_prefix(run, "default", cuda_job_prefix)
+            if detected == cuda_job_prefix or "cuda" not in detected.lower():
+                continue
+            jobs = get_workflow_jobs(run)
+            kind, test_jobs = get_cuda_test_jobs(jobs, detected)
+            if test_jobs:
+                # Propagate so log and artifact matching use the real name too.
+                CUDA_JOB_PREFIXES["default"] = detected
+                cuda_job_prefix = detected
+                trunk_wf = run
+                all_cuda_jobs = jobs
+                cuda_test_jobs = test_jobs
+                cuda_test_kind = kind
+                print(f"Found CUDA test jobs in trunk run {run['id']}")
+                break
+
     if not cuda_test_jobs and trunk_runs:
         # CUDA jobs may live in a run the jobs API does not surface (e.g. a
         # reusable workflow); the check-runs API resolves the actual run.
