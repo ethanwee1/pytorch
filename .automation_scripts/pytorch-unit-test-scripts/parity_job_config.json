@@ -22,15 +22,15 @@
   "rocm": {
     "mi350": {
       "default": [
-        { "workflow": "trunk", "job_prefix": "linux-jammy-rocm-py3.10-mi350" },
+        { "workflow": "trunk", "job_prefix": "linux-noble-rocm-py3.11-mi350" },
         { "workflow": "rocm-mi350", "job_prefix": "linux-noble-rocm-py3.12-mi350" }
       ],
       "distributed": [
         { "workflow": "periodic-rocm-mi350", "job_prefix": "linux-noble-rocm-py3.12-mi350" },
-        { "workflow": "trunk", "job_prefix": "linux-jammy-rocm-py3.10-mi350" }
+        { "workflow": "trunk", "job_prefix": "linux-noble-rocm-py3.11-mi350" }
       ],
       "inductor": [
-        { "workflow": "trunk", "job_prefix": "linux-jammy-rocm-py3.10-mi350" }
+        { "workflow": "trunk", "job_prefix": "linux-noble-rocm-py3.11-mi350" }
       ],
       "slow": [
         { "workflow": "slow", "job_prefix": "linux-noble-rocm-py3.11-mi350" }

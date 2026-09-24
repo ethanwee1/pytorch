@@ -293,6 +293,12 @@ def _candidate_job_prefixes(names, test_config):
             out[m.group(1)] = out.get(m.group(1), 0) + 1
     return out
 
+def _hardware_token(prefix):
+    """The accelerator family a job prefix names ('mi350', 'navi31', 'gfx942',
+    'cuda'), or None if it names none."""
+    m = re.search(r"(mi\d+|navi\d+|gfx\w+|cuda)", prefix.lower())
+    return m.group(1) if m else None
+
 def resolve_job_prefix(wf, test_config, configured_prefix):
     """Return the '<prefix>' upstream actually uses for this arch's
     <test_config> test jobs, so a drifted configured prefix self-heals instead
@@ -305,8 +311,8 @@ def resolve_job_prefix(wf, test_config, configured_prefix):
     API and the commit check-runs API (ROCm arch shards run in a reusable
     workflow, so they only appear in check-runs). If the configured prefix is
     present we keep it unchanged; otherwise we pick the candidate most similar
-    to it (shared os/py/arch tokens); if nothing matches we return the
-    configured value untouched.
+    to it among those for the same accelerator family; if nothing matches we
+    return the configured value untouched.
     """
     names = []
     try:
@@ -322,6 +328,17 @@ def resolve_job_prefix(wf, test_config, configured_prefix):
     candidates = _candidate_job_prefixes(names, test_config)
     if not candidates or configured_prefix in candidates:
         return configured_prefix
+    # Every other token may drift, but the accelerator family may not: a
+    # candidate for another one scores well lexically ('mi350' -> 'mi200' is a
+    # 3-character edit) and would report that arch's results as this one's.
+    hw = _hardware_token(configured_prefix)
+    if hw:
+        candidates = {p: n for p, n in candidates.items()
+                      if _hardware_token(p) == hw}
+        if not candidates:
+            print(f"NOTE: no upstream '{test_config}' job prefix found for "
+                  f"'{hw}'; keeping configured '{configured_prefix}'")
+            return configured_prefix
     import difflib
     best = max(
         candidates,
