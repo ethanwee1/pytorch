@@ -90,6 +90,19 @@ class SlowParityProducerTest(unittest.TestCase):
         self.assertEqual(len(rocm_jobs), 1)
         self.assertEqual(len(cuda_jobs), 1)
 
+    def test_cuda_test_jobs_span_every_config(self):
+        prefix = "linux-jammy-cuda13.2-py3.11-gcc11"
+        jobs = [
+            {"name": f"{prefix} / test (default, 1, 14, mt-l-x86aavx2-11-41-l4)", "id": 1},
+            {"name": f"{prefix} / test (distributed, 1, 10, mt-l-x86iavx512-45-172-t4-4)", "id": 2},
+            {"name": f"{prefix}-sm86 / test (slow, 1, 3, mt-l-x86aavx2-11-41-a10g)", "id": 3},
+        ]
+        kind, test_jobs = downloader.get_cuda_test_jobs(jobs, prefix)
+        self.assertEqual(kind, "test")
+        # Distributed must be included: these ids are the allowlist used to match
+        # S3 artifacts, so dropping them empties the CUDA distributed columns.
+        self.assertEqual([j["id"] for j in test_jobs], [1, 2])
+
     def test_log_failure_detector_classifies_slow(self):
         self.assertEqual(
             classify_log_file("rocm_slow2.txt"), ("rocm", "slow", 2)
