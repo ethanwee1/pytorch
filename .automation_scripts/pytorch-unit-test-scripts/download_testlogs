@@ -453,17 +453,24 @@ def matches_job_prefix(job_name, prefix):
 CUDA_TEST_KINDS = tuple(PARITY_CONFIG["cuda"]["test_kinds"])
 
 def get_cuda_test_jobs(jobs, cuda_job_prefix):
-    """Return the CUDA test kind and jobs for either main or PR CI layouts."""
-    return get_test_jobs_for_config(jobs, cuda_job_prefix, "default")
+    """Return the CUDA test kind and jobs for either main or PR CI layouts.
+
+    Spans every test config: callers use the result as the job-id allowlist for
+    S3 artifact matching, so restricting it to one config silently drops the
+    other configs' reports.
+    """
+    return get_test_jobs_for_config(jobs, cuda_job_prefix)
 
 
-def get_test_jobs_for_config(jobs, job_prefix, test_config):
-    """Return the test kind and jobs for one configured test family."""
+def get_test_jobs_for_config(jobs, job_prefix, test_config=None):
+    """Return the test kind and jobs for one configured test family, or for
+    every test family when test_config is None."""
+    match = f"({test_config}," if test_config else "("
     for test_kind in CUDA_TEST_KINDS:
         test_jobs = [
             j for j in jobs
             if matches_job_prefix(j['name'], job_prefix)
-            and f"/ {test_kind} ({test_config}," in j['name']
+            and f"/ {test_kind} {match}" in j['name']
         ]
         if test_jobs:
             return test_kind, test_jobs
