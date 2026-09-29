@@ -81,7 +81,7 @@ def _test_config_from_dir(dirname):
 
 def _is_junit_fixture_xml(path):
     """Return whether path is pytest's checked-in golden JUnit fixture."""
-    fixture_parts = ("test", "junit_xml_testdata", "expected")
+    fixture_parts = ("junit_xml_testdata", "expected")
     parts = path.parts
     return any(
         tuple(parts[index:index + len(fixture_parts)]) == fixture_parts
