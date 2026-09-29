@@ -3,6 +3,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import re
 import unittest
 
 
@@ -34,10 +35,30 @@ class SlowParityProducerTest(unittest.TestCase):
             cuda["slow"],
             [{
                 "workflow": "slow",
-                "job_prefix": "linux-jammy-cuda13.0-py3.10-gcc11-sm86",
+                "job_prefix": "linux-jammy-cuda13.2-py3.11-gcc11-sm86",
             }],
         )
         self.assertEqual(cuda["shard_counts"]["slow"], 3)
+        slow_regex = cuda["slow_checkrun_regex"]
+        self.assertEqual(
+            slow_regex,
+            (
+                r"^linux-jammy-cuda13[.]2-py3[.][0-9]+-gcc[0-9]+-sm86 "
+                r"/ (test-osdc|test) [(]slow,"
+            ),
+        )
+        self.assertRegex(
+            "linux-jammy-cuda13.2-py3.11-gcc11-sm86 / test (slow, 1, 3, runner)",
+            re.compile(slow_regex),
+        )
+        self.assertRegex(
+            "linux-jammy-cuda13.2-py3.12-gcc14-sm86 / test-osdc (slow, 1, 3, runner)",
+            re.compile(slow_regex),
+        )
+        self.assertNotRegex(
+            "linux-jammy-cuda13.4-py3.11-gcc11-sm86 / test (slow, 1, 3, runner)",
+            re.compile(slow_regex),
+        )
 
         slow_rocm_arches = [
             arch for arch, config in self.config["rocm"].items()
@@ -77,7 +98,7 @@ class SlowParityProducerTest(unittest.TestCase):
                 "(slow, 1, 3, linux.rocm.gpu.gfx950.1, module:rocm)"
             )},
             {"name": (
-                "linux-jammy-cuda13.0-py3.10-gcc11-sm86 / test "
+                "linux-jammy-cuda13.2-py3.11-gcc11-sm86 / test "
                 "(slow, 1, 3, lf-l-x86aavx2-29-113-a10g)"
             )},
         ]
@@ -85,7 +106,7 @@ class SlowParityProducerTest(unittest.TestCase):
             jobs, "linux-noble-rocm-py3.11-mi350", "slow"
         )
         _, cuda_jobs = downloader.get_test_jobs_for_config(
-            jobs, "linux-jammy-cuda13.0-py3.10-gcc11-sm86", "slow"
+            jobs, "linux-jammy-cuda13.2-py3.11-gcc11-sm86", "slow"
         )
         self.assertEqual(len(rocm_jobs), 1)
         self.assertEqual(len(cuda_jobs), 1)
@@ -164,6 +185,7 @@ class SlowParityProducerTest(unittest.TestCase):
         self.assertIn('ARGS="$ARGS --exclude_slow"', parity)
         self.assertIn('if [ -n "$slow_archs" ]; then', parity_auto)
         self.assertIn('SLOW_EXCLUDE_FLAG="-f exclude_slow=true"', parity_auto)
+        self.assertIn(".cuda.slow_checkrun_regex", parity_auto)
         self.assertIn("test-reports-test-slow-{i}-{slow_shards}", downloader)
         self.assertIn(
             'derive_shard_count(\n'
