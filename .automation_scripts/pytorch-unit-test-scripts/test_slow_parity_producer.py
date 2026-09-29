@@ -5,6 +5,7 @@ import json
 import os
 import re
 import unittest
+from unittest import mock
 
 
 SCRIPT_DIR = os.path.dirname(__file__)
@@ -78,6 +79,22 @@ class SlowParityProducerTest(unittest.TestCase):
 
     def test_xml_directory_classifies_slow(self):
         self.assertEqual(_test_config_from_dir("test-slow-2-3_123456"), "slow")
+
+    def test_job_prefix_resolution_stays_in_accelerator_family(self):
+        jobs = [
+            {"name": "linux-jammy-rocm-py3.11-mi200 / test (default, 1, 10, runner)"},
+            {"name": "linux-noble-rocm-py3.11-mi350 / test (default, 1, 8, runner)"},
+        ]
+        configured = "linux-jammy-rocm-py3.10-mi350"
+        with mock.patch.object(downloader, "get_workflow_jobs", return_value=jobs):
+            resolved = downloader.resolve_job_prefix({}, "default", configured)
+        self.assertEqual(resolved, "linux-noble-rocm-py3.11-mi350")
+
+        with mock.patch.object(
+            downloader, "get_workflow_jobs", return_value=jobs[:1]
+        ):
+            resolved = downloader.resolve_job_prefix({}, "default", configured)
+        self.assertEqual(resolved, configured)
 
     def test_downloader_matches_real_slow_jobs_and_scopes_arches(self):
         workflows, prefixes, _ = downloader.parity_config_views(
