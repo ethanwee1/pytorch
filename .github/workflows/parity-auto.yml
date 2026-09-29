@@ -151,8 +151,10 @@ jobs:
             SCHEDULED_WORKFLOWS=$(echo "$config_json" | jq -r '
               [ .rocm | to_entries[]
                 | select(.key != "mi350")
-                | (.value.default[]?, .value.distributed[]?, .value.inductor[]?, .value.slow[]?).workflow ]
-              | unique | .[]')
+                | .key as $arch
+                | [ (.value.default[]?, .value.distributed[]?, .value.inductor[]?, .value.slow[]?).workflow ]
+                | unique[]
+                | "\($arch) \(.)" ] | .[]')
           }
 
           print_run_config() {
@@ -160,7 +162,7 @@ jobs:
               "Upstream:        $UPSTREAM@$BRANCH" \
               "Target ref:      $TARGET_REF" \
               "Scope archs:     $ARCHS" \
-              "Scheduled wfs:   $(echo "$SCHEDULED_WORKFLOWS" | tr '\n' ' ')" \
+              "Scheduled wfs:   $(echo "$SCHEDULED_WORKFLOWS" | tr '\n' ';')" \
               "Max trunk runs:  $MAX_COMMITS" \
               "Max dispatches:  $MAX_DISPATCHES" \
               "Max age:         ${MAX_AGE_HOURS}h" \
@@ -205,12 +207,11 @@ jobs:
             workflows=$(fetch_paginated_array \
               "repos/$UPSTREAM/actions/workflows?per_page=100" \
               '.workflows[] | {id,path,state,updated_at}' \
-              "workflow list") || return 1
+              "workflow list") || return 2
             workflow_id=$(echo "$workflows" | jq -r --arg path "$path" '
               [ .[] | select(.path == $path and .state == "active") ]
               | sort_by(.updated_at) | last | .id // empty')
             if ! [[ "$workflow_id" =~ ^[0-9]+$ ]]; then
-              echo "::error::Could not resolve active workflow id for $path" >&2
               return 1
             fi
             echo "$workflow_id"
@@ -255,8 +256,13 @@ jobs:
           # commits): the report consumes trunk's jobs, so a completed trunk run
           # is the earliest a SHA can be ready.
           fetch_trunk_commits() {
-            local commits_json='[]' page=1 page_runs workflow_id
-            workflow_id=$(resolve_workflow_id trunk) || return 1
+            local commits_json='[]' page=1 page_runs workflow_id rc
+            workflow_id=$(resolve_workflow_id trunk)
+            rc=$?
+            if [ "$rc" -ne 0 ]; then
+              [ "$rc" -eq 1 ] && echo "::error::Could not resolve active trunk workflow" >&2
+              return 1
+            fi
             while [ "$(echo "$commits_json" | jq 'length')" -lt "$MAX_COMMITS" ]; do
               if ! page_runs=$(fetch_trunk_runs_page "$workflow_id" "$page"); then
                 return 1
@@ -288,19 +294,33 @@ jobs:
           # surface SHAs that the trunk-push scan alone would rank too low to
           # reach. 404/stale workflows simply yield nothing.
           fetch_scheduled_commits() {
-            local wf runs rows workflow_id
-            for wf in $SCHEDULED_WORKFLOWS; do
-              workflow_id=$(resolve_workflow_id "$wf") || return 1
-              runs=$(fetch_paginated_array \
-                "repos/$UPSTREAM/actions/workflows/$workflow_id/runs?branch=$BRANCH&status=completed&per_page=30" \
-                '.workflow_runs[] | {head_sha,created_at}' \
-                "scheduled workflow $wf") || return 1
-              if [ "$(echo "$runs" | jq 'length')" -eq 0 ]; then
-                echo "::error::Scheduled workflow $wf returned no completed runs" >&2
+            local arch candidate_arch wf runs rows workflow_id rc found
+            for arch in $(echo "$SCHEDULED_WORKFLOWS" | awk '{print $1}' | sort -u); do
+              found=false
+              while read -r candidate_arch wf; do
+                [ "$candidate_arch" != "$arch" ] && continue
+                workflow_id=$(resolve_workflow_id "$wf")
+                rc=$?
+                if [ "$rc" -eq 2 ]; then
+                  return 1
+                fi
+                if [ "$rc" -eq 1 ]; then
+                  echo "::warning::Configured workflow $wf is not active; trying another $arch source" >&2
+                  continue
+                fi
+                runs=$(fetch_paginated_array \
+                  "repos/$UPSTREAM/actions/workflows/$workflow_id/runs?branch=$BRANCH&status=completed&per_page=30" \
+                  '.workflow_runs[] | {head_sha,created_at}' \
+                  "scheduled workflow $wf") || return 1
+                [ "$(echo "$runs" | jq 'length')" -eq 0 ] && continue
+                rows=$(echo "$runs" | jq -r '.[] | "\(.head_sha) \(.created_at)"')
+                printf '%s\n' "$rows"
+                found=true
+              done <<< "$SCHEDULED_WORKFLOWS"
+              if [ "$found" != "true" ]; then
+                echo "::error::No active $arch workflow returned completed runs" >&2
                 return 1
               fi
-              rows=$(echo "$runs" | jq -r '.[] | "\(.head_sha) \(.created_at)"')
-              printf '%s\n' "$rows"
             done
           }
 
