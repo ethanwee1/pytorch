@@ -93,6 +93,41 @@ class CorruptArtifactTest(unittest.TestCase):
 
         self.assertEqual(len(dtl.error_msgs), 2)
 
+    def test_github_fallback_fills_each_missing_s3_prefix(self):
+        s3_path = Path("test-reports-test-default-1-2-rocm.gpu_1.zip")
+        gha_path = Path("test-reports-test-default-2-2-rocm.gpu_2.zip")
+        for path in (s3_path, gha_path):
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr(
+                    f"test-reports/{path.stem}.xml", "<testsuite/>"
+                )
+
+        def fake_s3(prefix, run_id, attempt, allowed_substrings=None):
+            return [s3_path] if prefix.endswith("1-2") else []
+
+        with (
+            mock.patch.object(dtl, "download_s3_artifacts", side_effect=fake_s3),
+            mock.patch.object(
+                dtl,
+                "download_gha_artifacts_filtered",
+                return_value=[gha_path],
+            ) as gha,
+        ):
+            dtl.download_xml_files(
+                123,
+                1,
+                prefixes=[
+                    "test-reports-test-default-1-2",
+                    "test-reports-test-default-2-2",
+                ],
+            )
+
+        self.assertEqual(len(list(Path(".").glob("**/*.xml"))), 2)
+        self.assertEqual(
+            gha.call_args.kwargs["prefixes"],
+            ["test-reports-test-default-2-2"],
+        )
+
 
 class ApiRetryTest(unittest.TestCase):
     def setUp(self):
