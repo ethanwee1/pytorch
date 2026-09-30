@@ -9,6 +9,7 @@ try:
     import requests
     import re
     import sys
+    import zipfile
     from upload_stats_lib import unzip
     from upload_test_stats import download_gha_artifacts, download_s3_artifacts
 except ImportError:
@@ -166,27 +167,68 @@ def _fetch_jobs_page(jobs_url, params, max_retries=7):
     """GET one page of the jobs API, retrying transient failures.
 
     When many parity runs fire at once they hammer the jobs API and GitHub
-    responds with 403 (secondary rate limit) or 5xx. Those bodies have no
-    'jobs' key, which previously surfaced as a bare KeyError. Retry with
-    exponential backoff (honouring Retry-After when present) and only give
-    up with a clear error after exhausting retries.
+    responds with 403 (secondary rate limit) or 5xx. GitHub can also drop a
+    connection mid-body under the same load. Retry every transient failure.
     """
+    last_failure = None
     for attempt in range(max_retries):
-        response = requests.get(jobs_url, headers=authentication_headers, params=params)
-        if response.status_code == 200:
-            response_json = response.json()
-            if "jobs" in response_json:
-                return response_json
+        retry_after = None
+        try:
+            response = requests.get(
+                jobs_url, headers=authentication_headers, params=params
+            )
+            if response.status_code == 200:
+                response_json = response.json()
+                if "jobs" in response_json:
+                    return response_json
+            last_failure = f"HTTP {response.status_code}"
+            retry_after = response.headers.get("Retry-After")
+        except requests.exceptions.RequestException as error:
+            last_failure = type(error).__name__
         if attempt == max_retries - 1:
             break
-        retry_after = response.headers.get("Retry-After")
         delay = int(retry_after) if retry_after and retry_after.isdigit() else 2 ** attempt
-        print(f"  WARNING: jobs API returned HTTP {response.status_code} for {jobs_url} "
+        print(f"  WARNING: jobs API request failed ({last_failure}) for {jobs_url} "
               f"(attempt {attempt + 1}/{max_retries}); retrying in {delay}s")
         time.sleep(delay)
     raise Exception(
         f"jobs API did not return a 'jobs' payload after {max_retries} attempts "
-        f"(last HTTP {response.status_code}) for {jobs_url}"
+        f"(last {last_failure}) for {jobs_url}"
+    )
+
+def _fetch_workflow_runs(workflow, params, max_retries=7):
+    """List workflow runs without turning API failures into an empty result."""
+    url = (
+        "https://api.github.com/repos/pytorch/pytorch/actions/workflows/"
+        f"{workflow}.yml/runs"
+    )
+    last_failure = None
+    for attempt in range(max_retries):
+        retry_after = None
+        try:
+            response = requests.get(
+                url, headers=authentication_headers, params=params
+            )
+            if response.status_code == 200:
+                response_json = response.json()
+                if "workflow_runs" in response_json:
+                    return response_json["workflow_runs"]
+            last_failure = f"HTTP {response.status_code}"
+            retry_after = response.headers.get("Retry-After")
+        except requests.exceptions.RequestException as error:
+            last_failure = type(error).__name__
+        if attempt == max_retries - 1:
+            break
+        delay = int(retry_after) if retry_after and retry_after.isdigit() else 2 ** attempt
+        print(
+            f"  WARNING: workflow-runs API request failed ({last_failure}) "
+            f"for {workflow}.yml (attempt {attempt + 1}/{max_retries}); "
+            f"retrying in {delay}s"
+        )
+        time.sleep(delay)
+    raise Exception(
+        "workflow-runs API did not return a 'workflow_runs' payload after "
+        f"{max_retries} attempts (last {last_failure}) for {workflow}.yml"
     )
 
 def get_workflow_jobs(wf, all_attempts=False):
@@ -679,7 +721,18 @@ def download_xml_files(workflow_run_id, workflow_run_attempts, prefixes=[], allo
         return
 
     for path in artifact_paths:
-            unzip(path)
+        if not zipfile.is_zipfile(path):
+            with open(path, "rb") as artifact:
+                head = artifact.read(512).decode("utf-8", "replace").strip()
+            error_msg = (
+                f"ERROR: artifact {path.name} is not a zip file "
+                f"({path.stat().st_size} bytes), skipping this shard. "
+                f"Stored content begins: {head!r}"
+            )
+            print(error_msg)
+            error_msgs.append(error_msg)
+            continue
+        unzip(path)
 
     job_ids = _shorten_unzipped_dirs()
     # Record which upstream run each shard's job id came from so job URLs are
@@ -725,17 +778,7 @@ def download_workflow_run(created=None, max_pages=10, workflow=None, sha=None, i
             params['branch'] = "main"
         print(".")
 
-        # Uncomment below for additional debug info
-        # print(f"authentication_headers: {authentication_headers}")
-        # print(f"params: {params}")
-        # print("https://api.github.com/repos/pytorch/pytorch/actions/workflows/{}.yml/runs".format(workflow))
-        response = requests.get("https://api.github.com/repos/pytorch/pytorch/actions/workflows/{}.yml/runs".format(workflow), headers=authentication_headers, params=params)
-        #print(response.json())
-        workflow_runs = None
-        try:
-            workflow_runs = response.json()['workflow_runs']
-        except:
-            raise Exception(response.text)
+        workflow_runs = _fetch_workflow_runs(workflow, params)
         if not workflow_runs:
             continue
         # Prefer completed runs over in-progress ones. When multiple
@@ -827,11 +870,7 @@ def resolve_full_trunk_run(sha, cuda_job_prefix, status='success', ignore_status
     params = {'per_page': 10, 'head_sha': sha}
     if not ignore_status and status:
         params['status'] = status
-    resp = requests.get(
-        f"https://api.github.com/repos/pytorch/pytorch/actions/workflows/{CUDAWorkflowNames['default']}.yml/runs",
-        headers=authentication_headers, params=params,
-    )
-    trunk_runs = resp.json().get('workflow_runs', [])
+    trunk_runs = _fetch_workflow_runs(CUDAWorkflowNames['default'], params)
     # Prefer the normal push trunk run over scheduled trunk runs. The scheduled
     # trunk.yml runs are the periodic rerun_disabled_tests / mem_leak_check
     # variants: their test jobs share the same names but run in a degenerate
