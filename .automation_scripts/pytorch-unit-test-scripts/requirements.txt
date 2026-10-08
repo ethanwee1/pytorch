@@ -1,4 +1,0 @@
-pandas
-rockset
-boto3
-requests
