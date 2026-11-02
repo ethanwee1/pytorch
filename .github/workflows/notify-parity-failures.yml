@@ -1,0 +1,65 @@
+name: Notify parity workflow failures
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      monitor_since:
+        description: "Override the earliest run creation time (ISO-8601)."
+        required: false
+        default: ""
+        type: string
+      dry_run:
+        description: "Log notifications without changing issues."
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: parity-failure-notifier
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    name: Check ${{ matrix.repository }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - repository: ROCm/pytorch
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ISSUE_REPOSITORY: ethanwee1/pytorch
+      TARGET_REPOSITORY: ${{ matrix.repository }}
+      MONITOR_SINCE: ${{ inputs.monitor_since }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Comment once per failed parity run
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          args=(
+            --target-repository "$TARGET_REPOSITORY"
+            --issue-repository "$ISSUE_REPOSITORY"
+          )
+          if [ -n "$MONITOR_SINCE" ]; then
+            args+=(--monitor-since "$MONITOR_SINCE")
+          fi
+          if [ "$DRY_RUN" = "true" ]; then
+            args+=(--dry-run)
+          fi
+
+          python .github/scripts/notify_parity_failures.py "${args[@]}"
